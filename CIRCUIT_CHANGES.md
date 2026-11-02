@@ -16,9 +16,16 @@ This implements the report's trusted-database milestone: loop over private job a
 
 ## Verification and limits
 
-`python -B -m unittest discover -s tests -v`: 15 tests passed, one real-Nargo integration test skipped because Nargo is unavailable. `git diff --check` passed. The 14 embedded Noir tests have **not** been executed here. Compilation, witness execution, and Barretenberg proof generation/verification remain unverified on this machine.
+Verified on 2 November 2026 with Nargo `1.0.0-beta.26` and Barretenberg `5.2.0` in Ubuntu/WSL:
 
-When Nargo is installed, run `nargo test` from `circuit/`, then `nargo execute witness` for the generated sample. The Python integration test also runs automatically when it finds Nargo. Existing committed files under `circuit/target/` are historical artifacts, not evidence of this new circuit's correctness; the engine recompiles before use. Existing database applications were not re-proved.
+- All 14 embedded Noir tests passed.
+- The circuit compiled to ACIR.
+- The database-generated witness solved successfully.
+- Barretenberg generated a 14,656-byte UltraHonk proof.
+- A separate `bb verify` invocation returned `Proof verified successfully`.
+- The full Windows Python `zk_engine.py` path also generated and verified the proof through WSL after cross-platform path handling was fixed.
+
+Existing database applications were not re-proved. The installed binaries live in the current machine's Ubuntu user profile and are not part of the repository.
 
 As proposed, the backend is trusted to supply the complete, correct history. This circuit verifies the computations over those records; it does not authenticate their origin or prevent a malicious trusted backend from fabricating/omitting records. Those are the later authenticated-state extensions in the report.
 

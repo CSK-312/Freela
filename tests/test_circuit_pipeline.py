@@ -11,7 +11,7 @@ from generate_circuit import generate_main_nr
 from generate_prover import generate_prover_toml
 import zk_engine
 
-NARGO = shutil.which('nargo') or (zk_engine.NARGO_BIN if Path(zk_engine.NARGO_BIN).is_file() else None)
+NARGO = shutil.which('nargo')
 
 
 class FullHistoryTests(unittest.TestCase):
@@ -74,15 +74,31 @@ class FullHistoryTests(unittest.TestCase):
     def test_engine_uses_same_capacity_and_recompiles_existing_artifact(self):
         # A rejected execute stops before proving. This checks orchestration only.
         result = subprocess.CompletedProcess([], 1, '', 'constraint failure')
+        fake_nargo = zk_engine.Tool('nargo')
+        fake_bb = zk_engine.Tool('bb')
         with patch.object(zk_engine, 'CIRCUIT_DIR', str(self.root)), patch.object(
-                zk_engine.subprocess, 'run', side_effect=[subprocess.CompletedProcess([], 0, '', ''), result]) as run:
+                zk_engine, 'get_toolchain', return_value=(fake_nargo, fake_bb)), patch.object(
+                zk_engine, '_run', side_effect=[subprocess.CompletedProcess([], 0, '', ''), result]) as run:
             (self.root / 'target').mkdir()
             (self.root / 'target/circuit.json').write_text('old artifact')
             output = zk_engine.generate_and_verify_zk_proof(3, 1, num_past_jobs=40)
             self.assertFalse(output['success'])
-            self.assertEqual(run.call_args_list[0].args[0][1], 'compile')
+            self.assertEqual(run.call_args_list[0].args[1], 'compile')
             self.assertIn('ratings: [u32; 40]', (self.root / 'src/main.nr').read_text())
             self.assertEqual(len(output['prover_data']['private_inputs']['ratings']), 40)
+
+    def test_toolchain_versions_are_enforced(self):
+        nargo, bb = zk_engine.Tool('nargo'), zk_engine.Tool('bb')
+        good_nargo = subprocess.CompletedProcess([], 0, 'nargo version = 1.0.0-beta.26', '')
+        good_bb = subprocess.CompletedProcess([], 0, '5.2.0', '')
+        with patch.object(zk_engine, '_resolve_tool', side_effect=[nargo, bb]), patch.object(
+                zk_engine, '_run', side_effect=[good_nargo, good_bb]):
+            self.assertEqual(zk_engine.get_toolchain(), (nargo, bb))
+        wrong_bb = subprocess.CompletedProcess([], 0, '6.0.0', '')
+        with patch.object(zk_engine, '_resolve_tool', side_effect=[nargo, bb]), patch.object(
+                zk_engine, '_run', side_effect=[good_nargo, wrong_bb]), self.assertRaisesRegex(
+                RuntimeError, 'Expected Barretenberg 5.2.0'):
+            zk_engine.get_toolchain()
 
     @unittest.skipUnless(NARGO, 'Nargo is not installed; actual circuit execution not tested')
     def test_noir_tests_and_database_witness(self):
