@@ -1,0 +1,35 @@
+{# The logged-in freelancer's own stats, derived from their full job history. #}
+<div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: var(--radius-md); padding: 18px 24px; margin-bottom: 32px; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow-sm); flex-wrap: wrap; gap: 16px;">
+  <div style="display: flex; align-items: center; gap: 14px;">
+    <div style="width: 44px; height: 44px; border-radius: 50%; background: #ecfdf5; color: #059669; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+      <i class="fa-solid fa-user-shield"></i>
+    </div>
+    <div>
+      <div style="font-size: 15px; font-weight: 700; color: #0f172a;">
+        Your Private Reputation
+      </div>
+      <div style="font-size: 13px; color: #64748b;">
+        Only you can see these numbers. Clients only see whether your ZK proof passed their job's requirements.
+      </div>
+    </div>
+  </div>
+  
+  <div style="display: flex; gap: 20px; align-items: center;">
+    <div style="text-align: center;">
+      <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Rating</span>
+      <span style="font-size: 16px; font-weight: 800; color: #0f172a;"><i class="fa-solid fa-star" style="color: #f59e0b; font-size: 13px;"></i> {{ "%.2f"|format(current_freelancer.rating_score) }}</span>
+    </div>
+    <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
+      <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Jobs Done</span>
+      <span style="font-size: 16px; font-weight: 800; color: #0f172a;">{{ current_freelancer.completed_jobs }}</span>
+    </div>
+    <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
+      <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">On-Time %</span>
+      <span style="font-size: 16px; font-weight: 800; color: #10b981;">{{ "%.2f"|format(current_freelancer.on_time_rate) }}%</span>
+    </div>
+    <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
+      <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Disputes</span>
+      <span style="font-size: 16px; font-weight: 800; color: #ef4444;">{{ current_freelancer.dispute_count }}</span>
+    </div>
+  </div>
+</div>

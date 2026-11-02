@@ -1,0 +1,73 @@
+{% extends 'base.html' %}
+
+{% block title %}Sign Up - Freela{% endblock %}
+
+{% block content %}
+<div style="max-width: 440px; margin: 40px auto 80px auto; padding: 0 20px;">
+  <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: var(--radius-lg); padding: 36px 32px; box-shadow: var(--shadow-md);">
+
+    <div style="text-align: center; margin-bottom: 28px;">
+      <div style="display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 50%; background: #ecfdf5; color: #059669; font-size: 22px; margin-bottom: 12px;">
+        <i class="fa-solid fa-user-plus"></i>
+      </div>
+      <h2 style="font-size: 22px; font-weight: 800; color: #0f172a; margin-bottom: 6px;">Create your Freela account</h2>
+      <p style="font-size: 13px; color: #64748b;">Privacy-preserving freelance marketplace</p>
+    </div>
+
+    <form method="POST" action="{{ url_for('register') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div style="margin-bottom: 18px;">
+        <label for="username" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Username</label>
+        <input
+          type="text"
+          id="username"
+          name="username"
+          value="{{ username }}"
+          placeholder="3-30 letters, numbers or _"
+          pattern="[A-Za-z0-9_]{3,30}"
+          autocomplete="username"
+          required
+          style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;"
+        >
+      </div>
+
+      <div style="margin-bottom: 18px;">
+        <label for="password" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Password</label>
+        <input
+          type="password"
+          id="password"
+          name="password"
+          placeholder="At least 8 characters"
+          minlength="8"
+          autocomplete="new-password"
+          required
+          style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;"
+        >
+      </div>
+
+      <fieldset style="border: none; padding: 0; margin: 0 0 24px 0;">
+        <legend style="font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 8px;">I want to</legend>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <label style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; cursor: pointer;">
+            <input type="radio" name="role" value="client" required {% if role == 'client' %}checked{% endif %}>
+            <span><strong style="color: #2563eb;">Hire</strong> (Client)</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; cursor: pointer;">
+            <input type="radio" name="role" value="freelancer" {% if role == 'freelancer' %}checked{% endif %}>
+            <span><strong style="color: #059669;">Work</strong> (Freelancer)</span>
+          </label>
+        </div>
+      </fieldset>
+
+      <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px; font-size: 15px;">
+        Create Account
+      </button>
+    </form>
+
+    <div style="margin-top: 20px; text-align: center; font-size: 13px; color: #64748b;">
+      Already have an account? <a href="{{ url_for('login') }}" style="color: #059669; font-weight: 600;">Sign in</a>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

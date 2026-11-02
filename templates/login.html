@@ -15,23 +15,28 @@
     </div>
 
     <form method="POST" action="{{ url_for('login') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div style="margin-bottom: 18px;">
-        <label style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Username or Email</label>
+        <label for="username" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Username</label>
         <input 
           type="text" 
+          id="username"
           name="username" 
-          placeholder="e.g. alex_dev or alice@freela.io" 
+          placeholder="e.g. alex_dev" 
+          autocomplete="username"
           required 
           style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;"
         >
       </div>
 
       <div style="margin-bottom: 24px;">
-        <label style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Password</label>
+        <label for="password" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Password</label>
         <input 
           type="password" 
+          id="password"
           name="password" 
           placeholder="••••••••" 
+          autocomplete="current-password"
           required 
           style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;"
         >
@@ -42,25 +47,8 @@
       </button>
     </form>
 
-    <!-- Demo Quick Login Helper -->
-    <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #f1f5f9;">
-      <span style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: #94a3b8; display: block; margin-bottom: 8px;">
-        Quick One-Click Demo Logins:
-      </span>
-      <div style="display: flex; flex-direction: column; gap: 8px;">
-        <a href="/switch-user/3" class="btn btn-outline" style="justify-content: flex-start; font-size: 13px; padding: 8px 12px;">
-          <span style="color: #059669; font-weight: bold;">[Freelancer]</span> alex_dev
-        </a>
-        <a href="/switch-user/4" class="btn btn-outline" style="justify-content: flex-start; font-size: 13px; padding: 8px 12px;">
-          <span style="color: #059669; font-weight: bold;">[Freelancer]</span> sara_design
-        </a>
-        <a href="/switch-user/1" class="btn btn-outline" style="justify-content: flex-start; font-size: 13px; padding: 8px 12px;">
-          <span style="color: #2563eb; font-weight: bold;">[Client]</span> Alice Morgan (Tech Lead)
-        </a>
-      </div>
-      <div style="font-size: 11px; color: #94a3b8; margin-top: 10px; text-align: center;">
-        Default password for manual login: <code>password123</code>
-      </div>
+    <div style="margin-top: 20px; text-align: center; font-size: 13px; color: #64748b;">
+      New to Freela? <a href="{{ url_for('register') }}" style="color: #059669; font-weight: 600;">Create an account</a>
     </div>
 
   </div>

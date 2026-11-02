@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -7,11 +8,21 @@ import unittest
 from unittest.mock import patch
 
 import database
-from generate_circuit import generate_main_nr
+from generate_circuit import generate_main_nr, generate_commit_nr
 from generate_prover import generate_prover_toml
+from support import insert_test_credential
 import zk_engine
 
-NARGO = shutil.which('nargo')
+PROJECT = Path(__file__).resolve().parent.parent
+
+
+def _installed(name, home_path):
+    found = shutil.which(name) or os.path.expanduser(home_path)
+    return found if os.path.isfile(found) else None
+
+
+NARGO = _installed('nargo', '~/.nargo/bin/nargo')
+BB = _installed('bb', '~/.bb/bb')
 
 
 class FullHistoryTests(unittest.TestCase):
@@ -21,6 +32,7 @@ class FullHistoryTests(unittest.TestCase):
         self.db_patch = patch.object(database, 'DB_PATH', str(self.root / 'test.db'))
         self.db_patch.start()
         database.init_db()
+        insert_test_credential(3)
 
     def tearDown(self):
         self.db_patch.stop()
@@ -54,6 +66,8 @@ class FullHistoryTests(unittest.TestCase):
         for capacity in (0, 1, -1, 4097, True, 2.5):
             with self.subTest(capacity=capacity), self.assertRaises(ValueError):
                 generate_main_nr(self.root / 'main.nr', capacity)
+            with self.subTest(capacity=capacity), self.assertRaises(ValueError):
+                generate_commit_nr(self.root / 'commit.nr', capacity)
         with self.assertRaises(ValueError):
             self.inputs(rating_scale=10)
 
@@ -71,21 +85,65 @@ class FullHistoryTests(unittest.TestCase):
             conn.commit()
             conn.close()
 
-    def test_engine_uses_same_capacity_and_recompiles_existing_artifact(self):
-        # A rejected execute stops before proving. This checks orchestration only.
-        result = subprocess.CompletedProcess([], 1, '', 'constraint failure')
-        fake_nargo = zk_engine.Tool('nargo')
-        fake_bb = zk_engine.Tool('bb')
-        with patch.object(zk_engine, 'CIRCUIT_DIR', str(self.root)), patch.object(
-                zk_engine, 'get_toolchain', return_value=(fake_nargo, fake_bb)), patch.object(
-                zk_engine, '_run', side_effect=[subprocess.CompletedProcess([], 0, '', ''), result]) as run:
-            (self.root / 'target').mkdir()
-            (self.root / 'target/circuit.json').write_text('old artifact')
-            output = zk_engine.generate_and_verify_zk_proof(3, 1, num_past_jobs=40)
-            self.assertFalse(output['success'])
-            self.assertEqual(run.call_args_list[0].args[1], 'compile')
-            self.assertIn('ratings: [u32; 40]', (self.root / 'src/main.nr').read_text())
-            self.assertEqual(len(output['prover_data']['private_inputs']['ratings']), 40)
+    def test_public_inputs_bind_job_applicant_and_newest_credential(self):
+        insert_test_credential(3)  # version 2 supersedes version 1
+        result = self.inputs()
+        conn = database.get_db_connection()
+        current = database.get_current_credential(conn, 3)
+        conn.close()
+        self.assertEqual(current['version'], 2)
+        self.assertEqual(result['credential_id'], current['id'])
+        self.assertEqual({k: result['public_inputs'][k] for k in ('job_id', 'applicant_id', 'commitment')},
+                         {'job_id': 1, 'applicant_id': 3, 'commitment': current['commitment']})
+        self.assertIn(f'salt = "{current["salt"]}"', (self.root / 'Prover.toml').read_text())
+
+    def test_missing_or_stale_credential_is_rejected(self):
+        conn = database.get_db_connection()
+        conn.execute('''INSERT INTO reputation_records
+            (job_reference, freelancer_id, client_id, rating_scaled, on_time, disputed, completed_at)
+            VALUES ('EXTRA-1', 3, 1, 500, 1, 0, '2026-06-01')''')
+        conn.commit()
+        conn.close()
+        with self.assertRaisesRegex(ValueError, 'must be reissued'):
+            self.inputs()
+        with self.assertRaisesRegex(ValueError, 'No credential'):
+            generate_prover_toml(4, 1, self.root / 'Prover.toml')
+
+    def test_prepare_circuits_builds_both_packages_and_pins_vk_once(self):
+        for name in ('circuit', 'circuit_commit'):
+            (self.root / name).mkdir()
+        calls = []
+
+        def fake_run(tool, *args, cwd=None, timeout=None):
+            calls.append((args[0], Path(cwd).name))
+            if args[0] == 'write_vk':
+                (Path(cwd) / 'target/vk').mkdir(parents=True)
+                (Path(cwd) / 'target/vk/vk').write_bytes(b'vk')
+            return subprocess.CompletedProcess([], 0, '', '')
+
+        tools = (zk_engine.Tool('nargo'), zk_engine.Tool('bb'))
+        with patch.object(zk_engine, 'CIRCUIT_DIR', str(self.root / 'circuit')), \
+                patch.object(zk_engine, 'COMMIT_DIR', str(self.root / 'circuit_commit')), \
+                patch.dict(zk_engine._builds, clear=True), \
+                patch.object(zk_engine, 'get_toolchain', return_value=tools), \
+                patch.object(zk_engine, '_run', side_effect=fake_run):
+            build = zk_engine.prepare_circuits(40)
+            self.assertIs(zk_engine.prepare_circuits(40), build)
+        self.assertEqual(calls, [('compile', 'circuit'), ('compile', 'circuit_commit'), ('write_vk', 'circuit')])
+        self.assertEqual(build.vk_hash, hashlib.sha256(b'vk').hexdigest())
+        for name in ('circuit', 'circuit_commit'):
+            self.assertIn('ratings: [u32; 40]', (self.root / name / 'src/main.nr').read_text())
+
+    def test_issue_missing_skips_freelancers_with_credentials_or_no_history(self):
+        conn = database.get_db_connection()
+        conn.execute('DELETE FROM reputation_records WHERE freelancer_id = 7')
+        conn.commit()
+        conn.close()
+        with patch.object(zk_engine, 'issue_credential', side_effect=lambda fid, cap: fid) as issue:
+            issued = zk_engine.issue_missing_credentials()
+        # 3 already has one (setUp); 7 has no history; clients never get one.
+        self.assertEqual(sorted(issued), [4, 5, 6])
+        self.assertEqual(issue.call_count, 3)
 
     def test_toolchain_versions_are_enforced(self):
         nargo, bb = zk_engine.Tool('nargo'), zk_engine.Tool('bb')
@@ -100,26 +158,61 @@ class FullHistoryTests(unittest.TestCase):
                 RuntimeError, 'Expected Barretenberg 5.2.0'):
             zk_engine.get_toolchain()
 
-    @unittest.skipUnless(NARGO, 'Nargo is not installed; actual circuit execution not tested')
-    def test_noir_tests_and_database_witness(self):
-        (self.root / 'Nargo.toml').write_text('[package]\nname="test_circuit"\ntype="bin"\nauthors=[]\n[dependencies]\n')
-        generate_main_nr(self.root / 'src/main.nr')
+
+@unittest.skipUnless(NARGO, 'Nargo is not installed; actual circuit execution not tested')
+class RealToolchainTests(unittest.TestCase):
+    """Runs the pinned Noir/Barretenberg tools on copies of the circuit packages."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.patches = [patch.object(database, 'DB_PATH', str(self.root / 'test.db')),
+                        patch.dict(zk_engine._builds, clear=True)]
+        for name, attribute in (('circuit', 'CIRCUIT_DIR'), ('circuit_commit', 'COMMIT_DIR')):
+            (self.root / name).mkdir()
+            shutil.copy2(PROJECT / name / 'Nargo.toml', self.root / name)
+            self.patches.append(patch.object(zk_engine, attribute, str(self.root / name)))
+        self.patches.append(patch.object(zk_engine, 'RUNS_DIR', str(self.root / 'runs')))
+        for p in self.patches:
+            p.start()
+        database.init_db()
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        self.temp.cleanup()
+
+    def sql(self, statement):
         conn = database.get_db_connection()
-        conn.execute('UPDATE jobs SET min_rating=4.9 WHERE id=1')
+        conn.execute(statement)
         conn.commit()
         conn.close()
-        self.inputs()
-        for command in ([NARGO, 'test'], [NARGO, 'execute', 'witness']):
-            result = subprocess.run(command, cwd=self.root, capture_output=True, text=True, timeout=180)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        # Make the oldest job poor: the circuit must include it, not just recent jobs.
-        conn = database.get_db_connection()
-        conn.execute('UPDATE reputation_records SET rating_scaled=100 WHERE id=1')
-        conn.commit()
-        conn.close()
-        self.inputs()
-        result = subprocess.run([NARGO, 'execute', 'witness'], cwd=self.root, capture_output=True, text=True, timeout=180)
-        self.assertNotEqual(result.returncode, 0, 'Oldest record was ignored')
+
+    def test_noir_tests_pass(self):
+        generate_main_nr(self.root / 'circuit/src/main.nr')
+        result = subprocess.run([NARGO, 'test'], cwd=self.root / 'circuit', capture_output=True, text=True, timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(BB, 'Barretenberg is not installed; real proving not tested')
+    def test_end_to_end_proof_and_tamper_detection(self):
+        credential = zk_engine.issue_credential(3)
+        self.assertEqual((credential['version'], credential['record_count']), (1, 40))
+
+        result = zk_engine.generate_and_verify_zk_proof(3, 1)
+        self.assertTrue(result['success'], result)
+        self.assertTrue(result['verified'])
+        self.assertEqual(len(result['vk_hash']), 64)
+        self.assertEqual(list((self.root / 'runs').iterdir()), [])
+
+        # Editing history after issuance (even improving it) breaks the commitment.
+        self.sql('UPDATE reputation_records SET on_time=1 WHERE id=1')
+        self.assertFalse(zk_engine.generate_and_verify_zk_proof(3, 1)['success'])
+
+        # Once reissued over a poor oldest job, the circuit counts it: 4.9 is no longer met.
+        self.sql('UPDATE reputation_records SET rating_scaled=100 WHERE id=1')
+        self.sql('UPDATE jobs SET min_rating=4.9 WHERE id=1')
+        zk_engine.issue_credential(3)
+        self.assertFalse(zk_engine.generate_and_verify_zk_proof(3, 1)['success'])
 
 
 if __name__ == '__main__':

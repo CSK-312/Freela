@@ -18,41 +18,32 @@
       </a>
 
       <ul class="nav-links">
-        <li><a href="{{ url_for('home') }}" class="nav-link active">Home</a></li>
+        <li><a href="{{ url_for('home') }}" class="nav-link {% if request.endpoint == 'home' %}active{% endif %}">Home</a></li>
+        {% if current_user %}
         <li><a href="{{ url_for('home') }}#browse" class="nav-link">Browse Jobs</a></li>
-        <li><a href="{{ url_for('database_viewer') }}" class="nav-link" target="_blank"><i class="fa-solid fa-database"></i> Review Database</a></li>
-        {% if session.get('role') == 'client' %}
-        <li><a href="{{ url_for('create_job') }}" class="nav-link"><i class="fa-solid fa-plus-circle"></i> Post Job</a></li>
+        <li><a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}"><i class="fa-solid fa-table-columns"></i> Dashboard</a></li>
+        {% endif %}
+        {% if current_user and current_user.role == 'client' %}
+        <li><a href="{{ url_for('create_job') }}" class="nav-link {% if request.endpoint == 'create_job' %}active{% endif %}"><i class="fa-solid fa-plus-circle"></i> Post Job</a></li>
         {% endif %}
       </ul>
 
       <div class="nav-actions">
-        <!-- Quick Role Switcher for seamless demo testing -->
-        <div style="font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 6px;">
-          <span>Switch demo user:</span>
-          <select onchange="window.location.href='/switch-user/' + this.value" style="padding: 4px 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12px; background: #fff; cursor: pointer;">
-            <option value="3" {% if session.get('user_id') == 3 %}selected{% endif %}>Freelancer: alex_dev</option>
-            <option value="4" {% if session.get('user_id') == 4 %}selected{% endif %}>Freelancer: sara_design</option>
-            <option value="1" {% if session.get('user_id') == 1 %}selected{% endif %}>Client: Alice Morgan</option>
-            <option value="2" {% if session.get('user_id') == 2 %}selected{% endif %}>Client: Nexus TechCorp</option>
-          </select>
-        </div>
-
-        <button class="icon-btn" title="Notifications">
-          <i class="fa-regular fa-bell"></i>
-        </button>
-
-        {% if session.get('username') %}
-        <div class="user-badge" title="Role: {{ session.get('role') }}">
-          <div class="avatar-circle">{{ session.get('initials', 'U') }}</div>
-          <div>
-            <div class="user-meta-name">{{ session.get('full_name', session.get('username')) }}</div>
-            <div class="user-meta-role">{{ session.get('role') }}</div>
+        {% if current_user %}
+        <div class="user-badge" title="Role: {{ current_user.role }}">
+          <div class="avatar-circle">{{ current_user.avatar_initials or 'U' }}</div>
+          <div class="user-meta">
+            <div class="user-meta-name">{{ current_user.full_name or current_user.username }}</div>
+            <div class="user-meta-role">{{ current_user.role }}</div>
           </div>
-          <a href="{{ url_for('logout') }}" style="margin-left: 6px; color: #94a3b8;" title="Logout"><i class="fa-solid fa-arrow-right-from-bracket"></i></a>
+          <form method="POST" action="{{ url_for('logout') }}" style="margin-left: 6px;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" title="Logout" aria-label="Log out" style="background: none; border: none; cursor: pointer; color: #94a3b8; font-size: inherit;"><i class="fa-solid fa-arrow-right-from-bracket"></i></button>
+          </form>
         </div>
         {% else %}
-        <a href="{{ url_for('login') }}" class="btn btn-primary" style="padding: 8px 16px; font-size: 13px;">Login</a>
+        <a href="{{ url_for('login') }}" class="btn btn-outline" style="padding: 8px 16px; font-size: 13px;">Login</a>
+        <a href="{{ url_for('register') }}" class="btn btn-primary" style="padding: 8px 16px; font-size: 13px;">Sign up</a>
         {% endif %}
       </div>
     </div>
@@ -65,7 +56,7 @@
         {% for category, message in messages %}
           <div class="alert alert-{{ category }}">
             <span><i class="fa-solid fa-circle-info" style="margin-right: 8px;"></i> {{ message }}</span>
-            <button onclick="this.parentElement.remove()" style="background: none; border: none; cursor: pointer; color: inherit; font-size: 16px;">&times;</button>
+            <button type="button" aria-label="Dismiss" onclick="this.parentElement.remove()" style="background: none; border: none; cursor: pointer; color: inherit; font-size: 16px;">&times;</button>
           </div>
         {% endfor %}
       </div>
@@ -83,7 +74,6 @@
         <strong>Freela ZK-Marketplace</strong> &bull; CS670 Applied Cryptography & Zero-Knowledge Systems
       </div>
       <div style="display: flex; gap: 20px;">
-        <a href="{{ url_for('database_viewer') }}" style="color: #059669; font-weight: 600;"><i class="fa-solid fa-database"></i> Inspect freela.db (SQLite)</a>
         <span>Powered by Noir & Barretenberg</span>
       </div>
     </div>

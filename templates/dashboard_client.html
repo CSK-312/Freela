@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+
+{% block title %}Client Dashboard - Freela{% endblock %}
+
+{% block content %}
+<div class="main-wrapper">
+  <div class="section-header">
+    <h1 class="section-title">Your jobs</h1>
+    <a href="{{ url_for('create_job') }}" class="btn btn-primary btn-sm"><i class="fa-solid fa-plus"></i> Post a job</a>
+  </div>
+  <p class="muted" style="margin-bottom: 20px;">
+    Your client rating:
+    {% if my_rating.count %}
+    <i class="fa-solid fa-star" style="color: #f59e0b;"></i> <strong>{{ "%.1f"|format(my_rating.rating) }}</strong> from {{ my_rating.count }} freelancer review{{ 's' if my_rating.count != 1 }}
+    {% else %}
+    no reviews yet
+    {% endif %}
+  </p>
+
+  {% if jobs %}
+  <div class="panel" style="padding: 0; overflow: hidden;">
+    <div class="table-wrap">
+      <table class="db-table">
+        <thead>
+          <tr><th>Job</th><th>Status</th><th>Applicants</th><th>Freelancer</th><th>Next step</th></tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          {% set stage = job_stage(job) %}
+          <tr>
+            <td style="font-weight: 600;"><a href="{{ url_for('job_detail', job_id=job.id) }}">{{ job.title }}</a><div class="muted" style="font-weight: 400;">${{ "%.0f"|format(job.budget) }} · {{ job.delivery_days }} days</div></td>
+            <td><span class="pill pill-{{ stage }}">{{ STAGE_LABELS[stage] }}</span></td>
+            <td>{{ job.applicant_count }}{% if job.pending_count %} <span class="muted">({{ job.pending_count }} new)</span>{% endif %}</td>
+            <td>{{ job.freelancer_name or '—' }}</td>
+            <td>
+              {% if stage == 'open' %}
+                {% if job.pending_count %}<a href="{{ url_for('job_detail', job_id=job.id) }}" class="btn btn-outline btn-sm">Review applicants</a>{% else %}<span class="muted">Waiting for applicants</span>{% endif %}
+              {% elif stage == 'in_progress' %}
+                <span class="muted">Waiting for delivery</span>
+              {% elif stage == 'delivered' %}
+                <a href="{{ url_for('job_detail', job_id=job.id) }}" class="btn btn-primary btn-sm">Approve &amp; review</a>
+              {% else %}
+                <a href="{{ url_for('job_detail', job_id=job.id) }}" class="muted">View reviews</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="panel"><p class="muted">You haven't posted any jobs yet.</p></div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,285 @@
+{% extends 'base.html' %}
+
+{% block title %}{{ job.title }} - Freela{% endblock %}
+
+{% macro proof_badge(application) %}
+  {% if application.proof_verified == 1 %}
+  <span class="zk-status-badge zk-status-success"><i class="fa-solid fa-check-circle"></i> ZK Proof Verified</span>
+  {% else %}
+  <span class="zk-status-badge zk-status-warning"><i class="fa-solid fa-circle-exclamation"></i> Not verified</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro stars(rating_scaled) %}<span style="color: #f59e0b;">{{ '★' * (rating_scaled // 100) }}</span> {{ rating_scaled // 100 }}/5{% endmacro %}
+
+{% macro rating_fields(with_dispute) %}
+  <div style="margin-bottom: 14px;">
+    <label class="form-label" for="rating">Rating</label>
+    <select id="rating" name="rating" class="form-input" required>
+      {% for n in [5, 4, 3, 2, 1] %}
+      <option value="{{ n }}">{{ '★' * n }} {{ n }}/5</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div style="margin-bottom: 14px;">
+    <label class="form-label" for="comment">Comment (optional)</label>
+    <textarea id="comment" name="comment" rows="3" maxlength="2000" class="form-input"></textarea>
+  </div>
+  {% if with_dispute %}
+  <label style="display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin-bottom: 16px;">
+    <input type="checkbox" name="disputed" value="1" style="margin-top: 3px;">
+    <span>There was a dispute on this job. <span class="muted">This counts against the freelancer's dispute total.</span></span>
+  </label>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="main-wrapper">
+  <a href="{{ url_for('home') }}" class="muted"><i class="fa-solid fa-arrow-left"></i> Back to jobs</a>
+
+  <div class="detail-grid" style="margin-top: 16px;">
+    <div>
+      <!-- Job summary -->
+      <div class="panel">
+        <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start;">
+          <h1 style="font-size: 24px; font-weight: 800; line-height: 1.25;">{{ job.title }}</h1>
+          <span class="pill pill-{{ stage }}">{{ STAGE_LABELS[stage] }}</span>
+        </div>
+        <div class="muted" style="margin: 8px 0 16px 0; display: flex; gap: 14px; flex-wrap: wrap;">
+          <span><i class="fa-solid fa-tag"></i> {{ job.category }}</span>
+          <span><i class="fa-solid fa-dollar-sign"></i> Budget ${{ "%.0f"|format(job.budget) }}</span>
+          <span><i class="fa-regular fa-clock"></i> Delivery in {{ job.delivery_days }} day{{ 's' if job.delivery_days != 1 }}</span>
+          <span>
+            <i class="fa-regular fa-user"></i> {{ job.client_name }}
+            {% if job.client_review_count %}
+            · <i class="fa-solid fa-star" style="color: #f59e0b;"></i> {{ "%.1f"|format(job.client_rating) }} ({{ job.client_review_count }})
+            {% else %}
+            · New client
+            {% endif %}
+          </span>
+        </div>
+        <p style="white-space: pre-line; font-size: 14px; color: #334155;">{{ job.description }}</p>
+      </div>
+
+      {% if is_owner %}
+        {% if stage == 'in_progress' %}
+        <div class="panel">
+          <div class="panel-title"><i class="fa-solid fa-user-check" style="color: #059669;"></i> Hired: {{ job.freelancer_name }}</div>
+          <p class="muted">Hired {{ job.accepted_at[:16] }} UTC. Delivery is due by {{ job.due_at[:16] }} UTC. You'll be able to approve and review once they mark it delivered.</p>
+        </div>
+        {% elif stage == 'delivered' %}
+        <div class="panel">
+          <div class="panel-title"><i class="fa-solid fa-box-open" style="color: #6d28d9;"></i> {{ job.freelancer_name }} delivered this job</div>
+          <p class="muted" style="margin-bottom: 16px;">
+            Delivered {{ job.delivered_at[:16] }} UTC (due {{ job.due_at[:16] }} UTC).
+            Whether it was on time is worked out from these dates automatically.
+            Your rating goes into the freelancer's private history and is never shown to other clients.
+          </p>
+          <form method="POST" action="{{ url_for('complete_job', job_id=job.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {{ rating_fields(true) }}
+            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-check"></i> Approve work &amp; submit review</button>
+          </form>
+        </div>
+        {% elif stage == 'completed' %}
+        <div class="panel">
+          <div class="panel-title"><i class="fa-solid fa-star" style="color: #f59e0b;"></i> Reviews</div>
+          {% if reviews.of_freelancer %}
+          <p style="font-size: 14px; margin-bottom: 4px;"><strong>Your review of {{ job.freelancer_name }}:</strong> {{ stars(reviews.of_freelancer.rating_scaled) }}{% if reviews.of_freelancer.disputed %} · <span style="color: #b91c1c;">disputed</span>{% endif %}</p>
+          {% if reviews.of_freelancer.comment %}<p class="muted" style="margin-bottom: 12px;">"{{ reviews.of_freelancer.comment }}"</p>{% endif %}
+          {% endif %}
+          {% if reviews.of_client %}
+          <p style="font-size: 14px; margin-bottom: 4px;"><strong>{{ job.freelancer_name }}'s review of you:</strong> {{ stars(reviews.of_client.rating_scaled) }}</p>
+          {% if reviews.of_client.comment %}<p class="muted">"{{ reviews.of_client.comment }}"</p>{% endif %}
+          {% else %}
+          <p class="muted">{{ job.freelancer_name }} hasn't reviewed you yet.</p>
+          {% endif %}
+        </div>
+        {% endif %}
+
+      {% endif %}
+
+      {% if is_hired %}
+        {% if stage == 'in_progress' %}
+        <div class="panel">
+          <div class="panel-title"><i class="fa-solid fa-briefcase" style="color: #059669;"></i> You're hired!</div>
+          <p class="muted" style="margin-bottom: 16px;">Hired {{ job.accepted_at[:16] }} UTC. Deliver by {{ job.due_at[:16] }} UTC to count as on time.</p>
+          <form method="POST" action="{{ url_for('deliver_job', job_id=job.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-primary"><i class="fa-solid fa-paper-plane"></i> Mark as delivered</button>
+          </form>
+        </div>
+        {% elif stage == 'delivered' %}
+        <div class="panel">
+          <div class="panel-title"><i class="fa-solid fa-hourglass-half" style="color: #6d28d9;"></i> Waiting for the client</div>
+          <p class="muted">You delivered on {{ job.delivered_at[:16] }} UTC. The client will approve and review the work.</p>
+        </div>
+        {% elif stage == 'completed' %}
+        <div class="panel">
+          <div class="panel-title"><i class="fa-solid fa-star" style="color: #f59e0b;"></i> Job completed</div>
+          {% if reviews.of_freelancer %}
+          <p style="font-size: 14px; margin-bottom: 4px;"><strong>The client rated you</strong> {{ stars(reviews.of_freelancer.rating_scaled) }}{% if reviews.of_freelancer.disputed %} · <span style="color: #b91c1c;">marked as disputed</span>{% endif %}</p>
+          {% if reviews.of_freelancer.comment %}<p class="muted" style="margin-bottom: 8px;">"{{ reviews.of_freelancer.comment }}"</p>{% endif %}
+          <p class="muted" style="margin-bottom: 16px;">This job is now part of your private history and counts in your next ZK proof.</p>
+          {% endif %}
+          {% if reviews.of_client %}
+          <p style="font-size: 14px;"><strong>Your review of {{ job.client_name }}:</strong> {{ stars(reviews.of_client.rating_scaled) }}</p>
+          {% else %}
+          <form method="POST" action="{{ url_for('review_client', job_id=job.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <p style="font-size: 14px; font-weight: 600; margin-bottom: 10px;">Rate {{ job.client_name }} as a client</p>
+            {{ rating_fields(false) }}
+            <button type="submit" class="btn btn-primary">Submit review</button>
+          </form>
+          {% endif %}
+        </div>
+        {% endif %}
+      {% endif %}
+
+      {% if my_application and not is_hired %}
+      <div class="panel">
+        <div class="panel-title"><i class="fa-solid fa-file-signature"></i> Your application</div>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;">
+          <span class="pill pill-{{ my_application.status }}">{{ my_application.status|capitalize }}</span>
+          {{ proof_badge(my_application) }}
+        </div>
+        <p class="muted">Bid ${{ "%.0f"|format(my_application.bid_amount or 0) }} · applied {{ my_application.applied_at[:16] }} UTC</p>
+        {% if my_application.status == 'pending' %}
+        <form method="POST" action="{{ url_for('withdraw_application', application_id=my_application.id) }}" style="margin-top: 14px;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-outline btn-sm">Withdraw application</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="panel-title"><i class="fa-solid fa-shield-halved" style="color: #059669;"></i> ZK requirements</div>
+        <p class="muted" style="margin-bottom: 12px;">Applicants must prove these without revealing their history.</p>
+        <div class="criteria-list">
+          <span class="criteria-tag">Rating &ge; {{ job.min_rating }}★</span>
+          <span class="criteria-tag">Jobs &ge; {{ job.min_completed_jobs }}</span>
+          <span class="criteria-tag">On-time &ge; {{ job.min_on_time_rate }}%</span>
+          <span class="criteria-tag">Disputes &le; {{ job.max_disputes }}</span>
+        </div>
+      </div>
+
+      {% if current_user.role == 'freelancer' and not my_application %}
+        {% if stage == 'open' %}
+        <div class="panel">
+          <div class="panel-title"><i class="fa-solid fa-paper-plane" style="color: #059669;"></i> Apply with a ZK proof</div>
+          <div id="eligibilityStatus" class="alert alert-info" style="display: block; margin-bottom: 14px; font-size: 13px;">
+            <i class="fa-solid fa-spinner fa-spin"></i> Checking your private history against these requirements...
+          </div>
+          <form id="applyForm" method="POST" action="{{ url_for('apply_job', job_id=job.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div style="margin-bottom: 14px;">
+              <label class="form-label" for="bid_amount">Your bid ($)</label>
+              <input type="number" id="bid_amount" name="bid_amount" class="form-input" required min="1" max="1000000" step="0.01" value="{{ '%.2f'|format(job.budget) }}">
+            </div>
+            <div style="margin-bottom: 14px;">
+              <label class="form-label" for="cover_note">Cover note</label>
+              <textarea id="cover_note" name="cover_note" rows="4" maxlength="2000" class="form-input" placeholder="Briefly describe your approach..."></textarea>
+            </div>
+            <p class="muted" style="margin-bottom: 14px;">On submit, Noir builds a proof from your full job history and Barretenberg verifies it. The client sees only that it passed.</p>
+            <button type="submit" id="applyBtn" class="btn btn-zk" style="width: 100%;" disabled>
+              <i class="fa-solid fa-shield-halved"></i> Generate Proof &amp; Apply
+            </button>
+          </form>
+        </div>
+        {% else %}
+        <div class="panel"><p class="muted">This job is no longer accepting applications.</p></div>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  {% if is_owner %}
+    <div class="panel">
+      <div class="panel-title"><i class="fa-solid fa-users"></i> Applicants ({{ applicants|length }})</div>
+      {% if applicants %}
+      <p class="muted" style="margin-bottom: 12px;">Each applicant proved in zero knowledge that their history meets your requirements. You see whether the proof passed, not their rating or job count.</p>
+      <div class="table-wrap">
+        <table class="db-table">
+          <thead>
+            <tr><th>Freelancer</th><th>Bid</th><th>Cover note</th><th>Proof</th><th>Status</th>{% if stage == 'open' %}<th></th>{% endif %}</tr>
+          </thead>
+          <tbody>
+            {% for a in applicants %}
+            <tr>
+              <td style="font-weight: 600; white-space: nowrap;">{{ a.full_name }}<div class="muted" style="font-weight: 400;">@{{ a.username }}</div></td>
+              <td style="font-weight: 700;">${{ "%.0f"|format(a.bid_amount or 0) }}</td>
+              <td style="max-width: 260px; white-space: pre-line;">{{ a.cover_note or '—' }}</td>
+              <td>
+                {{ proof_badge(a) }}
+                {% if a.credential_version %}<div class="muted" style="font-size: 11px; margin-top: 4px;" title="Verification key SHA-256: {{ a.vk_hash }}">Credential v{{ a.credential_version }} · VK {{ (a.vk_hash or '')[:8] }}</div>{% endif %}
+              </td>
+              <td><span class="pill pill-{{ a.status }}">{{ a.status|capitalize }}</span></td>
+              {% if stage == 'open' %}
+              <td style="white-space: nowrap;">
+                {% if a.status == 'pending' %}
+                <form method="POST" action="{{ url_for('accept_application', application_id=a.id) }}" style="display: inline;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-primary btn-sm" {% if a.proof_verified != 1 %}disabled title="No verified proof"{% endif %}>Hire</button>
+                </form>
+                <form method="POST" action="{{ url_for('reject_application', application_id=a.id) }}" style="display: inline;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn btn-outline btn-sm">Decline</button>
+                </form>
+                {% endif %}
+              </td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="muted">No applications yet.</p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if current_freelancer %}
+  <div style="margin-top: 8px;">{% include '_reputation_card.html' %}</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if current_user.role == 'freelancer' and not my_application and stage == 'open' %}
+<script>
+(function () {
+  const statusBox = document.getElementById('eligibilityStatus');
+  const applyBtn = document.getElementById('applyBtn');
+
+  function show(kind, text) {
+    statusBox.className = 'alert alert-' + kind;
+    statusBox.textContent = text;
+  }
+
+  fetch('{{ url_for("check_eligibility", job_id=job.id) }}')
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        show('warning', data.error);
+      } else if (data.eligible) {
+        show('success', 'Eligible: your private history meets every requirement, so a valid proof can be generated.');
+        applyBtn.disabled = false;
+      } else {
+        show('danger', "Not eligible: your history doesn't meet these requirements, so no valid proof exists.");
+      }
+    })
+    .catch(() => show('warning', 'Could not check eligibility. Reload the page to try again.'));
+
+  // Proof generation takes a while; stop double submissions while it runs.
+  document.getElementById('applyForm').addEventListener('submit', function () {
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Generating and verifying proof... this can take a minute';
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

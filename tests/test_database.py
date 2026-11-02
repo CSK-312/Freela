@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import database
 from generate_prover import generate_prover_toml
+from support import insert_test_credential
 
 
 class DatabaseTests(unittest.TestCase):
@@ -69,6 +70,7 @@ class DatabaseTests(unittest.TestCase):
     def test_prover_uses_stored_ratings(self):
         self.conn.execute('UPDATE reputation_records SET rating_scaled=425 WHERE freelancer_id=3')
         self.conn.commit()
+        insert_test_credential(3)
         result = generate_prover_toml(3, 1, os.path.join(self.temp.name, 'Prover.toml'))
         inputs = result['private_inputs']
         self.assertEqual(inputs['ratings'], [425] * 40 + [0] * 24)
@@ -79,8 +81,10 @@ class DatabaseTests(unittest.TestCase):
     def test_web_reads_derived_history(self):
         import app
         with app.app.test_client() as client:
+            with client.session_transaction() as session:
+                session['user_id'] = 3
             self.assertEqual(client.get('/').status_code, 200)
-            self.assertEqual(client.get('/database').status_code, 200)
+            self.assertEqual(client.get('/database').status_code, 404)
             data = client.get('/api/check-eligibility/1').get_json()
             self.assertTrue(data['eligible'])
             self.assertEqual(data['freelancer_private_stats']['completed_jobs'], 40)
@@ -94,8 +98,11 @@ class DatabaseTests(unittest.TestCase):
         source = sqlite3.connect(source_path)
         target = sqlite3.connect(migrated_path)
         source.backup(target)
-        before = {t: target.execute(f'SELECT * FROM {t} ORDER BY id').fetchall()
-                  for t in ('users', 'jobs', 'applications')}
+        # Migrations add columns, so compare the columns that existed before.
+        columns = {t: [r[1] for r in target.execute(f'PRAGMA table_info({t})')]
+                   for t in ('users', 'jobs', 'applications')}
+        before = {t: target.execute(f'SELECT {", ".join(columns[t])} FROM {t} ORDER BY id').fetchall()
+                  for t in columns}
         source.close()
         target.close()
         with patch.object(database, 'DB_PATH', migrated_path):
@@ -103,7 +110,8 @@ class DatabaseTests(unittest.TestCase):
             database.init_db()
             conn = database.get_db_connection()
             for table, rows in before.items():
-                self.assertEqual([tuple(r) for r in conn.execute(f'SELECT * FROM {table} ORDER BY id')], rows)
+                self.assertEqual([tuple(r) for r in conn.execute(
+                    f'SELECT {", ".join(columns[table])} FROM {table} ORDER BY id')], rows)
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM reputation_records').fetchone()[0], 150)
             conn.close()
 

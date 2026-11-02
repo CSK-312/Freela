@@ -6,8 +6,13 @@
   <!-- Hero Banner matching the provided image design -->
   <section class="hero-banner">
     <div class="hero-left">
+      {% if current_user.role == 'freelancer' %}
+      <h1 class="hero-title">Find work that fits your track record</h1>
+      <p class="hero-subtitle">Apply with a zero-knowledge proof: clients learn that you meet their requirements, never your private stats.</p>
+      {% else %}
       <h1 class="hero-title">Find the right freelancer for your next project</h1>
       <p class="hero-subtitle">Hire skilled professionals for any task, with cryptographic Zero-Knowledge proof eligibility verification.</p>
+      {% endif %}
       
       <form action="{{ url_for('home') }}" method="GET" class="search-bar-wrap">
         <span class="search-icon"><i class="fa-solid fa-magnifying-glass"></i></span>
@@ -100,42 +105,8 @@
     </a>
   </div>
 
-  <!-- If Freelancer is logged in, show their Private Credential Stats Card -->
   {% if current_freelancer %}
-  <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: var(--radius-md); padding: 18px 24px; margin-bottom: 32px; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow-sm); flex-wrap: wrap; gap: 16px;">
-    <div style="display: flex; align-items: center; gap: 14px;">
-      <div style="width: 44px; height: 44px; border-radius: 50%; background: #ecfdf5; color: #059669; display: flex; align-items: center; justify-content: center; font-size: 20px;">
-        <i class="fa-solid fa-user-shield"></i>
-      </div>
-      <div>
-        <div style="font-size: 15px; font-weight: 700; color: #0f172a;">
-          Freelancer Reputation (Stored Demo Job History)
-        </div>
-        <div style="font-size: 13px; color: #64748b;">
-          Logged in as <strong>{{ current_freelancer.full_name }}</strong>. These stats remain completely secret during Noir ZK proof generation.
-        </div>
-      </div>
-    </div>
-    
-    <div style="display: flex; gap: 20px; align-items: center;">
-      <div style="text-align: center;">
-        <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Rating</span>
-        <span style="font-size: 16px; font-weight: 800; color: #0f172a;"><i class="fa-solid fa-star" style="color: #f59e0b; font-size: 13px;"></i> {{ "%.2f"|format(current_freelancer.rating_score) }}</span>
-      </div>
-      <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
-        <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Jobs Done</span>
-        <span style="font-size: 16px; font-weight: 800; color: #0f172a;">{{ current_freelancer.completed_jobs }}</span>
-      </div>
-      <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
-        <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">On-Time %</span>
-        <span style="font-size: 16px; font-weight: 800; color: #10b981;">{{ "%.2f"|format(current_freelancer.on_time_rate) }}%</span>
-      </div>
-      <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
-        <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Disputes</span>
-        <span style="font-size: 16px; font-weight: 800; color: #ef4444;">{{ current_freelancer.dispute_count }}</span>
-      </div>
-    </div>
-  </div>
+  {% include '_reputation_card.html' %}
   {% endif %}
 
   <!-- Popular Services / Open Jobs Section Header -->
@@ -166,12 +137,12 @@
         {% elif job.category == 'Design & Graphics' %}
         <div class="thumb-design-preview">
           <div class="thumb-design-box">
-            Brand Identity
+            {{ job.title|truncate(32) }}
           </div>
         </div>
         {% elif job.category == 'Writing & Content' %}
         <div class="thumb-content-preview">
-          <p>"Write SEO-optimized blog posts for applied cryptography &amp; zero-knowledge protocols..."</p>
+          <p>"{{ job.description|truncate(110) }}"</p>
         </div>
         {% else %}
         <div class="thumb-data-preview">
@@ -185,7 +156,7 @@
 
       <!-- Card Body -->
       <div class="card-body">
-        <h3 class="card-job-title" title="{{ job.title }}">{{ job.title }}</h3>
+        <h3 class="card-job-title" title="{{ job.title }}"><a href="{{ url_for('job_detail', job_id=job.id) }}">{{ job.title }}</a></h3>
         
         <!-- ZK Eligibility Criteria Pill Box -->
         <div class="card-zk-criteria">
@@ -201,20 +172,13 @@
           </div>
         </div>
 
-        <button 
-          type="button"
-          class="btn btn-outline apply-btn-trigger" 
-          style="width: 100%; margin-top: 6px; font-size: 13px; padding: 8px 12px;"
-          data-job-id="{{ job.id }}"
-          data-job-title="{{ job.title|e }}"
-          data-job-budget="{{ job.budget }}"
-          data-min-rating="{{ job.min_rating }}"
-          data-min-jobs="{{ job.min_completed_jobs }}"
-          data-min-ontime="{{ job.min_on_time_rate }}"
-          data-max-disputes="{{ job.max_disputes }}"
-        >
-          <i class="fa-solid fa-shield-halved" style="color: #059669;"></i> Verify ZK Proof &amp; Apply
-        </button>
+        <a href="{{ url_for('job_detail', job_id=job.id) }}" class="btn btn-outline" style="width: 100%; margin-top: 6px; font-size: 13px; padding: 8px 12px;">
+          {% if current_user.role == 'freelancer' %}
+          <i class="fa-solid fa-shield-halved" style="color: #059669;"></i> View &amp; Apply with ZK Proof
+          {% else %}
+          <i class="fa-regular fa-eye"></i> View Job
+          {% endif %}
+        </a>
 
         <!-- Card Footer with Client Info & Price -->
         <div class="card-footer">
@@ -223,7 +187,11 @@
             <div class="author-info">
               <span class="author-name">{{ job.client_name }}</span>
               <span class="author-rating">
-                <i class="fa-solid fa-star star-icon"></i> 4.9 (Client)
+                {% if job.client_review_count %}
+                <i class="fa-solid fa-star star-icon"></i> {{ "%.1f"|format(job.client_rating) }} (Client, {{ job.client_review_count }} review{{ 's' if job.client_review_count != 1 }})
+                {% else %}
+                New client
+                {% endif %}
               </span>
             </div>
           </div>
@@ -236,223 +204,10 @@
 
       </div>
     </div>
+    {% else %}
+    <p style="color: var(--text-muted); font-size: 14px;">No open jobs match your search.</p>
     {% endfor %}
   </div>
 
-  <!-- Your Applications (if any) -->
-  {% if user_applications %}
-  <div style="margin-top: 48px;">
-    <div class="section-header">
-      <h2 class="section-title">Your Submitted Applications (With Zero-Knowledge Proofs)</h2>
-    </div>
-    <div style="background: #ffffff; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); overflow: hidden;">
-      <table class="db-table" style="margin-top: 0;">
-        <thead>
-          <tr>
-            <th>Job Title</th>
-            <th>Category</th>
-            <th>Proposed Bid</th>
-            <th>ZK Verification Status</th>
-            <th>Proof Hash / Identifier</th>
-            <th>Submitted At</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for app in user_applications %}
-          <tr>
-            <td style="font-weight: 600;">{{ app.title }}</td>
-            <td><span class="criteria-tag">{{ app.category }}</span></td>
-            <td style="font-weight: 700; color: #0f172a;">${{ "%.0f"|format(app.bid_amount) }}</td>
-            <td>
-              {% if app.proof_verified == 1 %}
-              <span class="zk-status-badge zk-status-success">
-                <i class="fa-solid fa-check-circle"></i> ZK Proof Verified
-              </span>
-              {% else %}
-              <span class="zk-status-badge zk-status-warning">
-                <i class="fa-solid fa-circle-exclamation"></i> Not verified
-              </span>
-              {% endif %}
-            </td>
-            <td><code style="font-size: 11px; background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">{{ (app.zk_proof_hex or '')[:24] }}...</code></td>
-            <td style="color: #64748b;">{{ app.applied_at }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-  {% endif %}
-
 </div>
-
-<!-- ZK Application Modal -->
-<div id="applyModal" class="modal-overlay">
-  <div class="modal-box">
-    <div class="modal-header">
-      <h3 id="modalJobTitle">Apply with ZK Proof</h3>
-      <button onclick="closeApplyModal()" class="close-btn">&times;</button>
-    </div>
-
-    <div class="modal-content">
-      <form id="applyForm" method="POST">
-        <input type="hidden" id="modalJobId" name="job_id">
-        <input type="hidden" id="zkProofHex" name="zk_proof_hex">
-        <input type="hidden" id="zkPublicInputs" name="zk_public_inputs">
-
-        <!-- Job Criteria Box -->
-        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; margin-bottom: 20px;">
-          <div style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: #64748b; margin-bottom: 6px;">
-            Public Job Eligibility Requirements:
-          </div>
-          <div id="modalCriteriaList" style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <!-- Injected via JS -->
-          </div>
-        </div>
-
-        <!-- Real-time Noir Eligibility Evaluation -->
-        <div id="eligibilityCheckStatus" style="padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; font-size: 13px;">
-          <i class="fa-solid fa-spinner fa-spin"></i> Checking your private credentials against Noir circuit requirements...
-        </div>
-
-        <!-- Noir Witness & Proof Simulation Terminal -->
-        <div style="margin-bottom: 18px;">
-          <label style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: #475569; display: flex; align-items: center; justify-content: space-between;">
-            <span>Noir Circuit &amp; Barretenberg Execution Preview</span>
-            <span style="font-size: 11px; font-weight: 600; color: #10b981;"><i class="fa-solid fa-code"></i> eligibility_circuit.nr</span>
-          </label>
-          <div id="zkCodePreview" class="zk-proof-box">
-// Waiting for circuit synthesis...
-          </div>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
-          <div>
-            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Your Bid Amount ($)</label>
-            <input type="number" id="modalBidAmount" name="bid_amount" required style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
-          </div>
-          <div>
-            <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Delivery Time</label>
-            <input type="text" value="3 days" readonly style="width: 100%; padding: 10px 14px; border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 8px; font-size: 14px; color: #64748b;">
-          </div>
-        </div>
-
-        <div style="margin-bottom: 20px;">
-          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">Cover Letter / Application Note</label>
-          <textarea name="cover_note" rows="3" placeholder="Briefly describe your approach to this project..." style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; font-size: 14px;"></textarea>
-        </div>
-
-        <div style="display: flex; gap: 12px; justify-content: flex-end;">
-          <button type="button" onclick="closeApplyModal()" class="btn btn-outline">Cancel</button>
-          <button type="submit" id="submitApplyBtn" class="btn btn-zk">
-            <i class="fa-solid fa-shield-halved"></i> Generate Proof &amp; Apply
-          </button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-let currentJobId = null;
-
-function openApplyModal(jobId, jobTitle, budget, minRating, minJobs, minOntime, maxDisputes) {
-  currentJobId = jobId;
-  document.getElementById('modalJobTitle').innerText = 'Apply to: ' + jobTitle;
-  document.getElementById('modalBidAmount').value = budget;
-  document.getElementById('applyForm').action = '/jobs/' + jobId + '/apply';
-  
-  // Render criteria tags
-  const criteriaContainer = document.getElementById('modalCriteriaList');
-  criteriaContainer.innerHTML = `
-    <span class="criteria-tag">Rating &ge; ${minRating}★</span>
-    <span class="criteria-tag">Completed &ge; ${minJobs}</span>
-    <span class="criteria-tag">On-time &ge; ${minOntime}%</span>
-    <span class="criteria-tag">Disputes &le; ${maxDisputes}</span>
-  `;
-
-  // Reset proof terminal
-  const statusBox = document.getElementById('eligibilityCheckStatus');
-  const codeBox = document.getElementById('zkCodePreview');
-  const submitBtn = document.getElementById('submitApplyBtn');
-  
-  statusBox.className = '';
-  statusBox.style.background = '#f1f5f9';
-  statusBox.style.color = '#334155';
-  statusBox.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Querying private reputation credential...';
-  submitBtn.disabled = true;
-
-  // Open modal
-  document.getElementById('applyModal').classList.add('active');
-
-  // Fetch eligibility check from backend
-  fetch('/api/check-eligibility/' + jobId)
-    .then(r => r.json())
-    .then(data => {
-      if (data.eligible) {
-        statusBox.style.background = '#ecfdf5';
-        statusBox.style.color = '#065f46';
-        statusBox.style.border = '1px solid #a7f3d0';
-        statusBox.innerHTML = '<i class="fa-solid fa-circle-check" style="color: #10b981;"></i> <strong>Eligible!</strong> Your private credentials satisfy all public constraints without revealing exact job counts or client identities.';
-
-        // Synthesize simulated Barretenberg proof
-        const simulatedProof = '0x' + Array.from({length: 32}, () => Math.floor(Math.random()*16).toString(16)).join('');
-        document.getElementById('zkProofHex').value = simulatedProof;
-        document.getElementById('zkPublicInputs').value = JSON.stringify(data.noir_public_inputs);
-
-        codeBox.innerHTML = `[Eligibility preview - proof not generated yet]
-> Display-only summary: rating=${data.preview_stats.rating}, jobs=${data.preview_stats.completed_jobs}, ontime=${data.preview_stats.on_time_rate}%, disputes=${data.preview_stats.disputes} [not circuit inputs]
-> Public inputs: min_rating=${data.noir_public_inputs.min_rating}, min_jobs=${data.noir_public_inputs.min_completed_jobs}, min_ontime=${data.noir_public_inputs.min_on_time_rate}%, max_disputes=${data.noir_public_inputs.max_disputes}
-> On submission: all stored job ratings, on-time flags and dispute flags enter the private witness.
-> Noir calculates totals and checks thresholds using cross multiplication.
-[Ready for Barretenberg UltraHonk Engine]
-> Clicking "Generate Proof & Apply" will run:
-   1. python3 generate_circuit.py (parameterizes main.nr)
-   2. python3 generate_prover.py (populates Prover.toml)
-   3. nargo execute witness (solves private witness)
-   4. bb prove & bb verify (cryptographically verifies UltraHonk proof)`;
-
-        submitBtn.disabled = false;
-      } else {
-        statusBox.style.background = '#fef2f2';
-        statusBox.style.color = '#991b1b';
-        statusBox.style.border = '1px solid #fecaca';
-        statusBox.innerHTML = '<i class="fa-solid fa-circle-xmark" style="color: #ef4444;"></i> <strong>Ineligible:</strong> Your current stats do not meet the minimum requirements for this specific job.';
-        
-        codeBox.innerHTML = `[Noir Constraint Failure]
-> assert(freelancer_stat >= requirement) failed!
-> Circuit cannot generate a valid UltraHonk proof without satisfying all assertions.`;
-        submitBtn.disabled = true;
-      }
-    })
-    .catch(err => {
-      statusBox.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Must be logged in as a freelancer to verify eligibility.';
-      submitBtn.disabled = true;
-    });
-}
-
-function closeApplyModal() {
-  document.getElementById('applyModal').classList.remove('active');
-}
-
-// Bind button triggers via dataset attributes cleanly
-document.addEventListener('DOMContentLoaded', function() {
-  document.querySelectorAll('.apply-btn-trigger').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      const d = this.dataset;
-      openApplyModal(
-        d.jobId,
-        d.jobTitle,
-        parseFloat(d.jobBudget),
-        parseFloat(d.minRating),
-        parseInt(d.minJobs),
-        parseInt(d.minOntime),
-        parseInt(d.maxDisputes)
-      );
-    });
-  });
-});
-</script>
 {% endblock %}

@@ -1,0 +1,81 @@
+{% extends 'base.html' %}
+
+{% block title %}Freelancer Dashboard - Freela{% endblock %}
+
+{% block content %}
+<div class="main-wrapper">
+  {% include '_reputation_card.html' %}
+
+  <div class="section-header">
+    <h2 class="section-title">Your jobs</h2>
+  </div>
+  {% if contracts %}
+  <div class="panel" style="padding: 0; overflow: hidden;">
+    <div class="table-wrap">
+      <table class="db-table">
+        <thead>
+          <tr><th>Job</th><th>Client</th><th>Status</th><th>Due</th><th>Client's rating of you</th></tr>
+        </thead>
+        <tbody>
+          {% for job in contracts %}
+          {% set stage = job_stage(job) %}
+          <tr>
+            <td style="font-weight: 600;"><a href="{{ url_for('job_detail', job_id=job.id) }}">{{ job.title }}</a></td>
+            <td>{{ job.client_name }}</td>
+            <td><span class="pill pill-{{ stage }}">{{ STAGE_LABELS[stage] }}</span></td>
+            <td class="muted">{{ job.due_at[:16] if job.due_at else '—' }}</td>
+            <td>
+              {% if job.rating_received %}
+              <span style="color: #f59e0b;">{{ '★' * (job.rating_received // 100) }}</span> {{ job.rating_received // 100 }}/5{% if job.disputed %} · <span style="color: #b91c1c;">disputed</span>{% endif %}
+              {% if not job.reviewed_client %}<div><a href="{{ url_for('job_detail', job_id=job.id) }}" class="muted" style="text-decoration: underline;">Rate this client</a></div>{% endif %}
+              {% elif stage == 'in_progress' %}
+              <a href="{{ url_for('job_detail', job_id=job.id) }}" class="btn btn-primary btn-sm">Mark delivered</a>
+              {% else %}
+              <span class="muted">Awaiting review</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="panel"><p class="muted">No hires yet. When a client hires you, the job shows up here.</p></div>
+  {% endif %}
+
+  <div class="section-header" style="margin-top: 32px;">
+    <h2 class="section-title">Your applications</h2>
+  </div>
+  {% if applications %}
+  <div class="panel" style="padding: 0; overflow: hidden;">
+    <div class="table-wrap">
+      <table class="db-table">
+        <thead>
+          <tr><th>Job</th><th>Bid</th><th>ZK proof</th><th>Status</th><th>Applied</th></tr>
+        </thead>
+        <tbody>
+          {% for app in applications %}
+          <tr>
+            <td style="font-weight: 600;"><a href="{{ url_for('job_detail', job_id=app.job_id) }}">{{ app.title }}</a><div class="muted" style="font-weight: 400;">{{ app.category }}</div></td>
+            <td style="font-weight: 700;">${{ "%.0f"|format(app.bid_amount or 0) }}</td>
+            <td>
+              {% if app.proof_verified == 1 %}
+              <span class="zk-status-badge zk-status-success"><i class="fa-solid fa-check-circle"></i> ZK Proof Verified</span>
+              {% else %}
+              <span class="zk-status-badge zk-status-warning"><i class="fa-solid fa-circle-exclamation"></i> Not verified</span>
+              {% endif %}
+            </td>
+            <td><span class="pill pill-{{ app.status }}">{{ app.status|capitalize }}</span></td>
+            <td class="muted">{{ app.applied_at[:16] }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="panel"><p class="muted">You haven't applied to any jobs yet. <a href="{{ url_for('home') }}#browse" style="text-decoration: underline;">Browse open jobs</a>.</p></div>
+  {% endif %}
+</div>
+{% endblock %}

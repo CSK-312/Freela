@@ -1,27 +1,198 @@
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, flash, g, abort
+from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
+from functools import wraps
 import hashlib
+import hmac
 import json
 import os
-from database import get_db_connection, init_db
+import re
+import secrets
+import sqlite3
+from werkzeug.security import check_password_hash
+from database import get_db_connection, init_db, hash_password, get_current_credential
+from generate_circuit import DEFAULT_HISTORY_CAPACITY
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_secret_key():
+    """FREELA_SECRET_KEY if set; otherwise a random key generated once and kept in .local/."""
+    configured = os.environ.get('FREELA_SECRET_KEY')
+    if configured:
+        return configured
+    path = os.path.join(BASE_DIR, '.local', 'secret_key')
+    try:
+        with open(path, encoding='ascii') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        key = secrets.token_hex(32)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w', encoding='ascii') as f:
+            f.write(key)
+        return key
+
 
 app = Flask(__name__)
-app.secret_key = 'freela_zk_secret_key_demo_dev'
+app.config.update(
+    SECRET_KEY=_load_secret_key(),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
 
 # Ensure database is present
 init_db()
 
-def hash_pw(pwd):
-    return hashlib.sha256(pwd.encode('utf-8')).hexdigest()
+USERNAME_RE = re.compile(r'[A-Za-z0-9_]{3,30}')
+MIN_PASSWORD_LENGTH = 8
+LEGACY_SHA256_RE = re.compile(r'[0-9a-f]{64}')
+PUBLIC_ENDPOINTS = {'login', 'register', 'static'}
+
+
+def _password_matches(stored_hash, password):
+    # Accounts created before salted hashing used plain SHA-256; they are upgraded on login.
+    if LEGACY_SHA256_RE.fullmatch(stored_hash):
+        return hmac.compare_digest(stored_hash, hashlib.sha256(password.encode('utf-8')).hexdigest())
+    return check_password_hash(stored_hash, password)
+
+
+def csrf_token():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_urlsafe(32)
+    return session['csrf_token']
+
+
+app.jinja_env.globals['csrf_token'] = csrf_token
+
+
+@app.context_processor
+def inject_current_user():
+    return {'current_user': g.get('user')}
+
 
 @app.before_request
-def make_default_session():
-    # If not logged in, set default to freelancer 'alex_dev' for immediate seamless exploration
-    if 'user_id' not in session:
-        session['user_id'] = 3  # alex_dev
-        session['username'] = 'alex_dev'
-        session['full_name'] = 'Alex Rivera'
-        session['role'] = 'freelancer'
-        session['initials'] = 'AR'
+def load_user_and_protect():
+    g.user = None
+    if 'user_id' in session:
+        conn = get_db_connection()
+        g.user = conn.execute(
+            'SELECT id, username, full_name, role, avatar_initials FROM users WHERE id = ?',
+            (session['user_id'],)
+        ).fetchone()
+        conn.close()
+        if g.user is None:
+            session.clear()
+
+    if request.method == 'POST':
+        token = session.get('csrf_token')
+        if not token or not hmac.compare_digest(token, request.form.get('csrf_token', '')):
+            flash('Your form expired. Please try again.', 'warning')
+            return redirect(url_for(request.endpoint if request.endpoint in ('login', 'register') else 'home'))
+
+    if g.user is None and request.endpoint is not None and request.endpoint not in PUBLIC_ENDPOINTS:
+        if request.path.startswith('/api/'):
+            return jsonify({'error': 'Login required'}), 401
+        return redirect(url_for('login'))
+
+
+@app.errorhandler(404)
+def not_found(error):
+    return render_template('error.html', code=404, heading='Page not found',
+                           message="That page doesn't exist, or you don't have access to it."), 404
+
+
+@app.errorhandler(500)
+def server_error(error):
+    return render_template('error.html', code=500, heading='Something went wrong',
+                           message='The server hit an unexpected error. Please try again.'), 500
+
+
+def role_required(role):
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            if g.user['role'] != role:
+                if request.path.startswith('/api/'):
+                    return jsonify({'error': f'Only {role}s can do that'}), 403
+                flash(f'Only {role}s can do that.', 'warning')
+                return redirect(url_for('home'))
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+@contextmanager
+def write_transaction():
+    """Check-then-update under one write lock; anything not committed is rolled back."""
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# A job delivered but not yet approved is stored as in_progress with delivered_at set.
+STAGE_LABELS = {
+    'open': 'Open',
+    'in_progress': 'In progress',
+    'delivered': 'Delivered - awaiting approval',
+    'completed': 'Completed',
+}
+
+
+def job_stage(job):
+    if job['status'] == 'in_progress' and job['delivered_at']:
+        return 'delivered'
+    return job['status']
+
+
+app.jinja_env.globals.update(job_stage=job_stage, STAGE_LABELS=STAGE_LABELS)
+
+# Average of the reviews freelancers left for each client (public, not part of any proof).
+CLIENT_RATINGS_JOIN = '''
+    LEFT JOIN (
+        SELECT reviewee_id, AVG(rating_scaled) / 100.0 AS client_rating, COUNT(*) AS client_review_count
+        FROM reviews GROUP BY reviewee_id
+    ) cr ON cr.reviewee_id = j.client_id
+'''
+
+
+class FormError(ValueError):
+    pass
+
+
+def form_text(name, label, max_length, required=True):
+    value = request.form.get(name, '').strip()
+    if required and not value:
+        raise FormError(f'{label} is required.')
+    if len(value) > max_length:
+        raise FormError(f'{label} must be at most {max_length} characters.')
+    return value
+
+
+def form_int(name, label, low, high):
+    try:
+        value = int(request.form.get(name, ''))
+    except ValueError:
+        raise FormError(f'{label} must be a whole number.')
+    if not low <= value <= high:
+        raise FormError(f'{label} must be between {low} and {high}.')
+    return value
+
+
+def form_decimal(name, label, low, high, places=2):
+    try:
+        value = Decimal(request.form.get(name, '').strip())
+    except InvalidOperation:
+        raise FormError(f'{label} must be a number.')
+    if not value.is_finite() or not Decimal(low) <= value <= Decimal(high):
+        raise FormError(f'{label} must be between {low} and {high}.')
+    if value != value.quantize(Decimal(1).scaleb(-places)):
+        raise FormError(f'{label} can have at most {places} decimal places.')
+    return float(value)
+
 
 @app.route('/')
 def home():
@@ -30,9 +201,11 @@ def home():
     search_query = request.args.get('q', '').strip()
 
     query = '''
-        SELECT j.*, u.full_name as client_name, u.avatar_initials as client_initials
+        SELECT j.*, u.full_name as client_name, u.avatar_initials as client_initials,
+               cr.client_rating, cr.client_review_count
         FROM jobs j
         JOIN users u ON j.client_id = u.id
+    ''' + CLIENT_RATINGS_JOIN + '''
         WHERE j.status = 'open'
     '''
     params = []
@@ -52,23 +225,12 @@ def home():
     # Get categories
     categories = conn.execute('SELECT * FROM categories').fetchall()
 
-    # Current user's private stats (if logged in as freelancer)
+    # The logged-in freelancer's own private stats (never anyone else's)
     current_freelancer = None
-    if session.get('role') == 'freelancer':
+    if g.user['role'] == 'freelancer':
         current_freelancer = conn.execute(
-            'SELECT * FROM users_with_reputation WHERE id = ?', (session.get('user_id'),)
+            'SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)
         ).fetchone()
-
-    # Recent applied jobs for current user
-    user_applications = []
-    if session.get('user_id'):
-        user_applications = conn.execute('''
-            SELECT a.*, j.title, j.budget, j.category
-            FROM applications a
-            JOIN jobs j ON a.job_id = j.id
-            WHERE a.freelancer_id = ?
-            ORDER BY a.applied_at DESC
-        ''', (session.get('user_id'),)).fetchall()
 
     conn.close()
 
@@ -78,107 +240,249 @@ def home():
         categories=categories,
         current_category=category_filter,
         search_query=search_query,
-        current_freelancer=current_freelancer,
-        user_applications=user_applications
+        current_freelancer=current_freelancer
     )
+
+
+@app.route('/jobs/<int:job_id>')
+def job_detail(job_id):
+    conn = get_db_connection()
+    job = conn.execute('''
+        SELECT j.*, u.full_name AS client_name, u.avatar_initials AS client_initials,
+               cr.client_rating, cr.client_review_count, f.full_name AS freelancer_name,
+               datetime(j.accepted_at, '+' || j.delivery_days || ' days') AS due_at
+        FROM jobs j
+        JOIN users u ON j.client_id = u.id
+        LEFT JOIN users f ON j.hired_freelancer_id = f.id
+    ''' + CLIENT_RATINGS_JOIN + '''
+        WHERE j.id = ?
+    ''', (job_id,)).fetchone()
+    if job is None:
+        conn.close()
+        abort(404)
+
+    is_owner = job['client_id'] == g.user['id']
+    is_hired = job['hired_freelancer_id'] == g.user['id']
+    # Only the owner sees who applied; a freelancer only sees their own application.
+    applicants = []
+    if is_owner:
+        applicants = conn.execute('''
+            SELECT a.*, u.full_name, u.username, u.avatar_initials, c.version AS credential_version
+            FROM applications a JOIN users u ON a.freelancer_id = u.id
+            LEFT JOIN credentials c ON a.credential_id = c.id
+            WHERE a.job_id = ? ORDER BY a.applied_at
+        ''', (job_id,)).fetchall()
+    my_application = None
+    current_freelancer = None
+    if g.user['role'] == 'freelancer':
+        my_application = conn.execute(
+            'SELECT * FROM applications WHERE job_id = ? AND freelancer_id = ?', (job_id, g.user['id'])
+        ).fetchone()
+        current_freelancer = conn.execute(
+            'SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)
+        ).fetchone()
+    reviews = {}
+    if is_owner or is_hired:
+        for review in conn.execute('SELECT * FROM reviews WHERE job_id = ?', (job_id,)):
+            reviews['of_freelancer' if review['reviewer_id'] == job['client_id'] else 'of_client'] = review
+    conn.close()
+
+    return render_template(
+        'job_detail.html',
+        job=job,
+        stage=job_stage(job),
+        is_owner=is_owner,
+        is_hired=is_hired,
+        applicants=applicants,
+        my_application=my_application,
+        current_freelancer=current_freelancer,
+        reviews=reviews
+    )
+
+
+@app.route('/dashboard')
+def dashboard():
+    conn = get_db_connection()
+    if g.user['role'] == 'client':
+        jobs = conn.execute('''
+            SELECT j.*, f.full_name AS freelancer_name,
+                   (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id) AS applicant_count,
+                   (SELECT COUNT(*) FROM applications a WHERE a.job_id = j.id AND a.status = 'pending') AS pending_count
+            FROM jobs j LEFT JOIN users f ON j.hired_freelancer_id = f.id
+            WHERE j.client_id = ?
+            ORDER BY j.id DESC
+        ''', (g.user['id'],)).fetchall()
+        my_rating = conn.execute(
+            'SELECT AVG(rating_scaled) / 100.0 AS rating, COUNT(*) AS count FROM reviews WHERE reviewee_id = ?',
+            (g.user['id'],)
+        ).fetchone()
+        conn.close()
+        return render_template('dashboard_client.html', jobs=jobs, my_rating=my_rating)
+
+    current_freelancer = conn.execute(
+        'SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)
+    ).fetchone()
+    applications = conn.execute('''
+        SELECT a.*, j.title, j.budget, j.category
+        FROM applications a JOIN jobs j ON a.job_id = j.id
+        WHERE a.freelancer_id = ?
+        ORDER BY a.applied_at DESC
+    ''', (g.user['id'],)).fetchall()
+    contracts = conn.execute('''
+        SELECT j.*, u.full_name AS client_name,
+               datetime(j.accepted_at, '+' || j.delivery_days || ' days') AS due_at,
+               mine.rating_scaled AS rating_received, mine.comment AS comment_received, mine.disputed,
+               EXISTS(SELECT 1 FROM reviews r WHERE r.job_id = j.id AND r.reviewer_id = ?) AS reviewed_client
+        FROM jobs j
+        JOIN users u ON j.client_id = u.id
+        LEFT JOIN reviews mine ON mine.job_id = j.id AND mine.reviewee_id = j.hired_freelancer_id
+        WHERE j.hired_freelancer_id = ?
+        ORDER BY j.status = 'completed', j.accepted_at DESC
+    ''', (g.user['id'], g.user['id'])).fetchall()
+    conn.close()
+    return render_template(
+        'dashboard_freelancer.html',
+        current_freelancer=current_freelancer,
+        applications=applications,
+        contracts=contracts
+    )
+
+
+def _start_session(user_id):
+    session.clear()  # drop any pre-login session data, including the old CSRF token
+    session['user_id'] = user_id
+
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if g.user:
+        return redirect(url_for('home'))
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
 
         conn = get_db_connection()
         user = conn.execute(
-            'SELECT * FROM users WHERE username = ? OR email = ?',
-            (username, username)
+            'SELECT id, password_hash FROM users WHERE username = ? COLLATE NOCASE', (username,)
         ).fetchone()
-        conn.close()
-
-        if user and user['password_hash'] == hash_pw(password):
-            session['user_id'] = user['id']
-            session['username'] = user['username']
-            session['full_name'] = user['full_name']
-            session['role'] = user['role']
-            session['initials'] = user['avatar_initials']
+        if user and _password_matches(user['password_hash'], password):
+            if LEGACY_SHA256_RE.fullmatch(user['password_hash']):
+                conn.execute('UPDATE users SET password_hash = ? WHERE id = ?', (hash_password(password), user['id']))
+                conn.commit()
+            conn.close()
+            _start_session(user['id'])
             flash('Logged in successfully!', 'success')
             return redirect(url_for('home'))
-        else:
-            flash('Invalid username or password (try password: "password123")', 'danger')
+        conn.close()
+        flash('Invalid username or password.', 'danger')
 
     return render_template('login.html')
 
-@app.route('/logout')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if g.user:
+        return redirect(url_for('home'))
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+        role = request.form.get('role')
+
+        if not USERNAME_RE.fullmatch(username):
+            flash('Username must be 3-30 letters, numbers or underscores.', 'danger')
+        elif len(password) < MIN_PASSWORD_LENGTH:
+            flash(f'Password must be at least {MIN_PASSWORD_LENGTH} characters.', 'danger')
+        elif role not in ('client', 'freelancer'):
+            flash('Choose whether you are a client or a freelancer.', 'danger')
+        else:
+            conn = get_db_connection()
+            try:
+                if conn.execute('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE', (username,)).fetchone():
+                    flash('That username is taken.', 'danger')
+                else:
+                    # users.email is NOT NULL UNIQUE in the original schema; accounts are
+                    # username-only, so store a unique placeholder that is never shown or used.
+                    # Legacy reputation columns are zeroed; reputation comes from history only.
+                    cursor = conn.execute('''
+                        INSERT INTO users (username, email, password_hash, role, full_name, avatar_initials,
+                                           rating_score, completed_jobs, on_time_rate, dispute_count)
+                        VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0)
+                    ''', (username, f'{username.lower()}@users.freela.local', hash_password(password),
+                          role, username, username[:2].upper()))
+                    conn.commit()
+                    _start_session(cursor.lastrowid)
+                    flash(f'Welcome to Freela, {username}!', 'success')
+                    return redirect(url_for('home'))
+            except sqlite3.IntegrityError:
+                flash('That username is taken.', 'danger')
+            finally:
+                conn.close()
+        return render_template('register.html', username=username, role=role)
+
+    return render_template('register.html', username='', role=None)
+
+
+@app.route('/logout', methods=['POST'])
 def logout():
     session.clear()
     flash('Logged out.', 'info')
-    return redirect(url_for('home'))
+    return redirect(url_for('login'))
 
-@app.route('/switch-user/<int:user_id>')
-def switch_user(user_id):
-    """Quick helper for test convenience to switch between Client and Freelancer accounts"""
-    conn = get_db_connection()
-    user = conn.execute('SELECT * FROM users_with_reputation WHERE id = ?', (user_id,)).fetchone()
-    conn.close()
-    if user:
-        session['user_id'] = user['id']
-        session['username'] = user['username']
-        session['full_name'] = user['full_name']
-        session['role'] = user['role']
-        session['initials'] = user['avatar_initials']
-    return redirect(request.referrer or url_for('home'))
 
 @app.route('/jobs/new', methods=['GET', 'POST'])
+@role_required('client')
 def create_job():
-    if session.get('role') != 'client':
-        flash('Only clients can post new jobs. Switch to Alice or TechCorp account.', 'warning')
-        return redirect(url_for('home'))
+    conn = get_db_connection()
+    categories = conn.execute('SELECT * FROM categories').fetchall()
+    conn.close()
 
     if request.method == 'POST':
-        title = request.form.get('title')
-        category = request.form.get('category')
-        description = request.form.get('description')
-        budget = float(request.form.get('budget', 500))
-        delivery_days = int(request.form.get('delivery_days', 7))
+        try:
+            title = form_text('title', 'Job title', 120)
+            category = form_text('category', 'Category', 60)
+            if category not in {c['name'] for c in categories}:
+                raise FormError('Choose one of the listed categories.')
+            description = form_text('description', 'Description', 5000)
+            budget = form_decimal('budget', 'Budget', 1, 1_000_000)
+            delivery_days = form_int('delivery_days', 'Delivery time', 1, 365)
 
-        # ZK public constraints
-        min_rating = float(request.form.get('min_rating', 4.5))
-        min_completed_jobs = int(request.form.get('min_completed_jobs', 10))
-        min_on_time_rate = int(request.form.get('min_on_time_rate', 90))
-        max_disputes = int(request.form.get('max_disputes', 1))
+            # ZK public constraints, limited to what the circuit can check
+            min_rating = form_decimal('min_rating', 'Minimum rating', 1, 5)
+            min_completed_jobs = form_int('min_completed_jobs', 'Minimum completed jobs', 0, DEFAULT_HISTORY_CAPACITY)
+            min_on_time_rate = form_int('min_on_time_rate', 'Minimum on-time rate', 0, 100)
+            max_disputes = form_int('max_disputes', 'Maximum disputes', 0, DEFAULT_HISTORY_CAPACITY)
+        except FormError as e:
+            flash(str(e), 'danger')
+            return render_template('create_job.html', categories=categories, form=request.form), 400
 
         conn = get_db_connection()
         conn.execute('''
             INSERT INTO jobs (client_id, title, category, description, budget, delivery_days, min_rating, min_completed_jobs, min_on_time_rate, max_disputes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (session['user_id'], title, category, description, budget, delivery_days, min_rating, min_completed_jobs, min_on_time_rate, max_disputes))
+        ''', (g.user['id'], title, category, description, budget, delivery_days, min_rating, min_completed_jobs, min_on_time_rate, max_disputes))
         conn.commit()
         conn.close()
 
         flash('Job posted successfully with ZK verification criteria!', 'success')
         return redirect(url_for('home'))
 
-    conn = get_db_connection()
-    categories = conn.execute('SELECT * FROM categories').fetchall()
-    conn.close()
-    return render_template('create_job.html', categories=categories)
+    return render_template('create_job.html', categories=categories, form={})
+
 
 @app.route('/api/check-eligibility/<int:job_id>', methods=['GET'])
+@role_required('freelancer')
 def check_eligibility(job_id):
     """
     Simulates / previews circuit condition check locally for the user
     Returns true if private stats satisfy public criteria
     """
-    if 'user_id' not in session or session.get('role') != 'freelancer':
-        return jsonify({'eligible': False, 'error': 'Must be logged in as a freelancer'})
-
     conn = get_db_connection()
-    job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
-    freelancer = conn.execute('SELECT * FROM users_with_reputation WHERE id = ?', (session['user_id'],)).fetchone()
+    job = conn.execute("SELECT * FROM jobs WHERE id = ? AND status = 'open'", (job_id,)).fetchone()
+    freelancer = conn.execute('SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)).fetchone()
     conn.close()
 
     if not job or not freelancer:
-        return jsonify({'error': 'Job or User not found'}), 404
+        return jsonify({'error': 'This job is not open for applications'}), 404
 
     # Private inputs vs Public criteria check
     satisfies_rating = freelancer['rating_sum'] >= round(job['min_rating'] * 100) * freelancer['completed_jobs']
@@ -222,94 +526,218 @@ def check_eligibility(job_id):
         'preview_stats': private_inputs
     })
 
+
 @app.route('/jobs/<int:job_id>/apply', methods=['POST'])
+@role_required('freelancer')
 def apply_job(job_id):
-    if session.get('role') != 'freelancer':
-        flash('Only freelancers can apply to jobs.', 'warning')
-        return redirect(url_for('home'))
+    try:
+        cover_note = form_text('cover_note', 'Cover note', 2000, required=False)
+        bid_amount = form_decimal('bid_amount', 'Bid amount', 1, 1_000_000)
+    except FormError as e:
+        flash(f'{e} Application not submitted.', 'danger')
+        return redirect(url_for('job_detail', job_id=job_id))
 
-    cover_note = request.form.get('cover_note', '')
-    bid_amount = float(request.form.get('bid_amount', 0))
-
+    # Check everything cheap before starting the (slow) proof.
     conn = get_db_connection()
-    # Check if already applied
+    job = conn.execute('SELECT status FROM jobs WHERE id = ?', (job_id,)).fetchone()
     existing = conn.execute(
         'SELECT id FROM applications WHERE job_id = ? AND freelancer_id = ?',
-        (job_id, session['user_id'])
+        (job_id, g.user['id'])
     ).fetchone()
+    conn.close()
 
+    if job is None:
+        abort(404)
+    if job['status'] != 'open':
+        flash('This job is no longer accepting applications.', 'warning')
+        return redirect(url_for('job_detail', job_id=job_id))
     if existing:
         flash('You have already applied for this job!', 'info')
-        conn.close()
-        return redirect(url_for('home'))
+        return redirect(url_for('job_detail', job_id=job_id))
 
-    from zk_engine import generate_and_verify_zk_proof
+    import zk_engine
 
     # Generate the cryptographic UltraHonk proof with Noir + Barretenberg
     try:
-        zk_res = generate_and_verify_zk_proof(freelancer_id=session['user_id'], job_id=job_id)
+        conn = get_db_connection()
+        has_credential = get_current_credential(conn, g.user['id']) is not None
+        conn.close()
+        if not has_credential:
+            # First application: issue the initial credential over the existing history.
+            zk_engine.issue_credential(g.user['id'])
+        zk_res = zk_engine.generate_and_verify_zk_proof(freelancer_id=g.user['id'], job_id=job_id)
         if zk_res.get('success') is not True:
             flash(f"Proof failed: {zk_res.get('error') or 'The proof process did not complete.'} Application not submitted.", 'danger')
-            conn.close()
-            return redirect(url_for('home'))
+            return redirect(url_for('job_detail', job_id=job_id))
 
         if zk_res.get('verified') is not True:
             flash('Proof verification failed. Application not submitted.', 'danger')
-            conn.close()
-            return redirect(url_for('home'))
+            return redirect(url_for('job_detail', job_id=job_id))
 
         real_proof_hex = zk_res.get('proof_hex', '')
         if not real_proof_hex:
             flash('Verified proof data is missing. Application not submitted.', 'danger')
-            conn.close()
-            return redirect(url_for('home'))
+            return redirect(url_for('job_detail', job_id=job_id))
         public_inputs_json = json.dumps(zk_res['prover_data']['public_inputs'])
-
-        conn.execute('''
-            INSERT INTO applications (job_id, freelancer_id, cover_note, bid_amount, proof_verified, zk_proof_hex, zk_public_inputs)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            job_id,
-            session['user_id'],
-            cover_note,
-            bid_amount,
-            1,
-            real_proof_hex,
-            public_inputs_json
-        ))
-        conn.commit()
-        conn.close()
-
-        flash('Success! UltraHonk ZK Proof generated via Noir & verified via Barretenberg (Proof length: ' + str(len(real_proof_hex)) + ' hex chars).', 'success')
     except Exception as e:
-        conn.close()
-        flash(f"ZK Engine Error: {str(e)}", 'danger')
+        flash(f"ZK Engine Error: {str(e)} Application not submitted.", 'danger')
+        return redirect(url_for('job_detail', job_id=job_id))
 
-    return redirect(url_for('home'))
-
-@app.route('/database')
-def database_viewer():
-    """Simple UI to easily inspect and review the SQLite database directly from the browser"""
     conn = get_db_connection()
-    users = conn.execute('SELECT * FROM users_with_reputation').fetchall()
-    jobs = conn.execute('''
-        SELECT j.*, u.full_name as client_name 
-        FROM jobs j JOIN users u ON j.client_id = u.id
-    ''').fetchall()
-    applications = conn.execute('''
-        SELECT a.*, j.title, u.username as freelancer_name 
-        FROM applications a 
-        JOIN jobs j ON a.job_id = j.id
-        JOIN users u ON a.freelancer_id = u.id
-    ''').fetchall()
-    conn.close()
+    try:
+        conn.execute('''
+            INSERT INTO applications (job_id, freelancer_id, cover_note, bid_amount, proof_verified, zk_proof_hex,
+                                      zk_public_inputs, credential_id, vk_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (job_id, g.user['id'], cover_note, bid_amount, 1, real_proof_hex, public_inputs_json,
+              zk_res.get('credential_id'), zk_res.get('vk_hash')))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        # A second submission finished first; the unique index keeps only one.
+        flash('You have already applied for this job!', 'info')
+        return redirect(url_for('job_detail', job_id=job_id))
+    finally:
+        conn.close()
 
-    return render_template(
-        'database_viewer.html',
-        users=users,
-        jobs=jobs,
-        applications=applications
-    )
+    flash('Success! UltraHonk ZK Proof generated via Noir & verified via Barretenberg (Proof length: ' + str(len(real_proof_hex)) + ' hex chars).', 'success')
+    return redirect(url_for('job_detail', job_id=job_id))
+
+
+def _owned_application(conn, application_id, owner_column):
+    row = conn.execute('''
+        SELECT a.*, j.client_id, j.status AS job_status
+        FROM applications a JOIN jobs j ON a.job_id = j.id
+        WHERE a.id = ?
+    ''', (application_id,)).fetchone()
+    if row is None or row[owner_column] != g.user['id']:
+        abort(404)
+    return row
+
+
+@app.route('/applications/<int:application_id>/accept', methods=['POST'])
+@role_required('client')
+def accept_application(application_id):
+    with write_transaction() as conn:
+        application = _owned_application(conn, application_id, 'client_id')
+        job_id = application['job_id']
+        if application['job_status'] != 'open' or application['status'] != 'pending':
+            flash('That application can no longer be accepted.', 'warning')
+            return redirect(url_for('job_detail', job_id=job_id))
+        if application['proof_verified'] != 1:
+            flash('Only applicants with a verified ZK proof can be hired.', 'danger')
+            return redirect(url_for('job_detail', job_id=job_id))
+        conn.execute('''UPDATE jobs SET status = 'in_progress', hired_freelancer_id = ?, accepted_at = CURRENT_TIMESTAMP
+            WHERE id = ?''', (application['freelancer_id'], job_id))
+        conn.execute("UPDATE applications SET status = 'accepted' WHERE id = ?", (application_id,))
+        conn.execute("UPDATE applications SET status = 'rejected' WHERE job_id = ? AND status = 'pending'", (job_id,))
+    flash('Freelancer hired. The other applicants were declined.', 'success')
+    return redirect(url_for('job_detail', job_id=job_id))
+
+
+@app.route('/applications/<int:application_id>/reject', methods=['POST'])
+@role_required('client')
+def reject_application(application_id):
+    with write_transaction() as conn:
+        application = _owned_application(conn, application_id, 'client_id')
+        if application['job_status'] == 'open' and application['status'] == 'pending':
+            conn.execute("UPDATE applications SET status = 'rejected' WHERE id = ?", (application_id,))
+            flash('Application declined.', 'info')
+    return redirect(url_for('job_detail', job_id=application['job_id']))
+
+
+@app.route('/applications/<int:application_id>/withdraw', methods=['POST'])
+@role_required('freelancer')
+def withdraw_application(application_id):
+    with write_transaction() as conn:
+        application = _owned_application(conn, application_id, 'freelancer_id')
+        if application['status'] == 'pending':
+            conn.execute("UPDATE applications SET status = 'withdrawn' WHERE id = ?", (application_id,))
+            flash('Application withdrawn.', 'info')
+    return redirect(url_for('job_detail', job_id=application['job_id']))
+
+
+def _job_for(conn, job_id, owner_column):
+    job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
+    if job is None or job[owner_column] != g.user['id']:
+        abort(404)
+    return job
+
+
+@app.route('/jobs/<int:job_id>/deliver', methods=['POST'])
+@role_required('freelancer')
+def deliver_job(job_id):
+    with write_transaction() as conn:
+        job = _job_for(conn, job_id, 'hired_freelancer_id')
+        if job_stage(job) != 'in_progress':
+            flash('This job is not waiting for delivery.', 'warning')
+            return redirect(url_for('job_detail', job_id=job_id))
+        conn.execute('UPDATE jobs SET delivered_at = CURRENT_TIMESTAMP WHERE id = ?', (job_id,))
+    flash('Marked as delivered. The client can now approve and review your work.', 'success')
+    return redirect(url_for('job_detail', job_id=job_id))
+
+
+@app.route('/jobs/<int:job_id>/complete', methods=['POST'])
+@role_required('client')
+def complete_job(job_id):
+    try:
+        rating_scaled = form_int('rating', 'Rating', 1, 5) * 100
+        comment = form_text('comment', 'Comment', 2000, required=False)
+    except FormError as e:
+        flash(str(e), 'danger')
+        return redirect(url_for('job_detail', job_id=job_id))
+    disputed = 1 if request.form.get('disputed') else 0
+
+    with write_transaction() as conn:
+        job = _job_for(conn, job_id, 'client_id')
+        if job_stage(job) != 'delivered':
+            flash('Only delivered work can be approved.', 'warning')
+            return redirect(url_for('job_detail', job_id=job_id))
+        conn.execute("UPDATE jobs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (job_id,))
+        conn.execute('''INSERT INTO reviews (job_id, reviewer_id, reviewee_id, rating_scaled, comment, disputed)
+            VALUES (?, ?, ?, ?, ?, ?)''', (job_id, g.user['id'], job['hired_freelancer_id'], rating_scaled, comment, disputed))
+        # Feedback loop: the completed, rated job joins the freelancer's private history,
+        # so their next proof is computed over it. On time = delivered within delivery_days
+        # of being hired, measured by the server rather than reported by either side.
+        conn.execute('''INSERT INTO reputation_records
+            (job_reference, freelancer_id, client_id, rating_scaled, on_time, disputed, completed_at)
+            SELECT 'JOB-' || id, hired_freelancer_id, client_id, ?,
+                   julianday(delivered_at) <= julianday(accepted_at) + delivery_days, ?, date('now')
+            FROM jobs WHERE id = ?''', (rating_scaled, disputed, job_id))
+    # Reissue the freelancer's credential so their next proof commits to the new history.
+    import zk_engine
+    try:
+        zk_engine.issue_credential(job['hired_freelancer_id'])
+        flash("Job completed. Your review was added to the freelancer's private history and their credential was reissued.", 'success')
+    except Exception as e:
+        flash(f"Job completed and your review was saved, but the freelancer's credential could not be reissued yet: {e}", 'warning')
+    return redirect(url_for('job_detail', job_id=job_id))
+
+
+@app.route('/jobs/<int:job_id>/review-client', methods=['POST'])
+@role_required('freelancer')
+def review_client(job_id):
+    try:
+        rating_scaled = form_int('rating', 'Rating', 1, 5) * 100
+        comment = form_text('comment', 'Comment', 2000, required=False)
+    except FormError as e:
+        flash(str(e), 'danger')
+        return redirect(url_for('job_detail', job_id=job_id))
+
+    with write_transaction() as conn:
+        job = _job_for(conn, job_id, 'hired_freelancer_id')
+        if job['status'] != 'completed':
+            flash('You can review the client once the job is completed.', 'warning')
+            return redirect(url_for('job_detail', job_id=job_id))
+        if conn.execute('SELECT 1 FROM reviews WHERE job_id = ? AND reviewer_id = ?', (job_id, g.user['id'])).fetchone():
+            flash('You already reviewed this client.', 'info')
+            return redirect(url_for('job_detail', job_id=job_id))
+        conn.execute('''INSERT INTO reviews (job_id, reviewer_id, reviewee_id, rating_scaled, comment)
+            VALUES (?, ?, ?, ?, ?)''', (job_id, g.user['id'], job['client_id'], rating_scaled, comment))
+    flash('Thanks! Your review of the client was saved.', 'success')
+    return redirect(url_for('job_detail', job_id=job_id))
+
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Port 5000 is taken by AirPlay Receiver on macOS, so the default is 5001.
+    app.run(host='127.0.0.1', port=int(os.environ.get('FREELA_PORT', 5001)),
+            debug=os.environ.get('FREELA_DEBUG') == '1')

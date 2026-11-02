@@ -12,30 +12,36 @@
     </div>
 
     <form method="POST" action="{{ url_for('create_job') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div style="margin-bottom: 18px;">
-        <label style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Job Title</label>
-        <input type="text" name="title" required placeholder="e.g. Fullstack React & Flask Engineer for Cryptography Platform" style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
+        <label for="title" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Job Title</label>
+        <input id="title" type="text" name="title" required maxlength="120" value="{{ form.get('title', '') }}" placeholder="e.g. Fullstack React & Flask Engineer for Cryptography Platform" style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
       </div>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 18px;">
         <div>
-          <label style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Category</label>
-          <select name="category" required style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #fff;">
+          <label for="category" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Category</label>
+          <select id="category" name="category" required style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px; background: #fff;">
             {% for cat in categories %}
-            <option value="{{ cat.name }}">{{ cat.name }}</option>
+            <option value="{{ cat.name }}" {% if form.get('category') == cat.name %}selected{% endif %}>{{ cat.name }}</option>
             {% endfor %}
           </select>
         </div>
 
         <div>
-          <label style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Budget ($ USD)</label>
-          <input type="number" name="budget" required value="750" style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
+          <label for="budget" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Budget ($ USD)</label>
+          <input id="budget" type="number" name="budget" required min="1" max="1000000" step="0.01" value="{{ form.get('budget', '750') }}" style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
+        </div>
+
+        <div>
+          <label for="delivery_days" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Delivery Time (days)</label>
+          <input id="delivery_days" type="number" name="delivery_days" required min="1" max="365" value="{{ form.get('delivery_days', '7') }}" style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 14px;">
         </div>
       </div>
 
       <div style="margin-bottom: 24px;">
-        <label style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Project Description</label>
-        <textarea name="description" rows="4" required placeholder="Provide clear requirements, goals, and deliverables..." style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; font-size: 14px;"></textarea>
+        <label for="description" style="display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px;">Project Description</label>
+        <textarea id="description" name="description" rows="4" required maxlength="5000" placeholder="Provide clear requirements, goals, and deliverables..." style="width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-family: inherit; font-size: 14px;">{{ form.get('description', '') }}</textarea>
       </div>
 
       <!-- ZK Verification Constraints Section -->
@@ -50,20 +56,20 @@
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
           <div>
-            <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Min Freelancer Rating (★)</label>
-            <input type="number" step="0.1" min="1.0" max="5.0" name="min_rating" value="4.8" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+            <label for="min_rating" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Min Freelancer Rating (★)</label>
+            <input id="min_rating" type="number" step="0.01" min="1.0" max="5.0" name="min_rating" value="{{ form.get('min_rating', '4.8') }}" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
           </div>
           <div>
-            <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Min Completed Gigs</label>
-            <input type="number" min="0" name="min_completed_jobs" value="20" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+            <label for="min_completed_jobs" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Min Completed Gigs</label>
+            <input id="min_completed_jobs" type="number" min="0" max="64" name="min_completed_jobs" value="{{ form.get('min_completed_jobs', '20') }}" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
           </div>
           <div>
-            <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Min On-Time Rate (%)</label>
-            <input type="number" min="0" max="100" name="min_on_time_rate" value="95" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+            <label for="min_on_time_rate" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Min On-Time Rate (%)</label>
+            <input id="min_on_time_rate" type="number" min="0" max="100" name="min_on_time_rate" value="{{ form.get('min_on_time_rate', '95') }}" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
           </div>
           <div>
-            <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Max Allowed Disputes</label>
-            <input type="number" min="0" name="max_disputes" value="1" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
+            <label for="max_disputes" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Max Allowed Disputes</label>
+            <input id="max_disputes" type="number" min="0" max="64" name="max_disputes" value="{{ form.get('max_disputes', '1') }}" style="width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px;">
           </div>
         </div>
       </div>
