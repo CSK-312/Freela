@@ -1,108 +1,76 @@
-import os
+"""Build private full-history arrays and public requirements from the trusted DB."""
+from decimal import Decimal
+from pathlib import Path
 import sys
-import sqlite3
-from database import get_db_connection
 
-def generate_prover_toml(
-    freelancer_id: int,
-    job_id: int,
-    output_path: str = None,
-    num_past_jobs: int = 5,
-    rating_scale: int = 100
-) -> dict:
-    """
-    Fetches applicant freelancer (Person A) and target job (Job B) data from the DB,
-    and formats them into Prover.toml inputs according to the circuit requirements:
-      - Private data: freelancer reputation metrics & recent ratings array
-      - Public data: job requirements/thresholds
-    """
+from database import get_db_connection, get_reputation_records
+from generate_circuit import DEFAULT_HISTORY_CAPACITY, validate_capacity
+
+
+def generate_prover_toml(freelancer_id, job_id, output_path=None,
+                         num_past_jobs=DEFAULT_HISTORY_CAPACITY, rating_scale=100):
+    validate_capacity(num_past_jobs)
+    if rating_scale != 100:
+        raise ValueError('The database stores ratings at scale 100.')
     conn = get_db_connection()
-    freelancer = conn.execute("SELECT * FROM users WHERE id = ?", (freelancer_id,)).fetchone()
-    job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    conn.close()
-
-    if not freelancer:
-        raise ValueError(f"Freelancer with ID {freelancer_id} not found in database.")
+    try:
+        # Read identity, requirements and ALL history from one database snapshot.
+        conn.execute('BEGIN')
+        freelancer = conn.execute('SELECT * FROM users WHERE id=?', (freelancer_id,)).fetchone()
+        job = conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        records = get_reputation_records(conn, freelancer_id)
+    finally:
+        conn.close()
+    if not freelancer or freelancer['role'] != 'freelancer':
+        raise ValueError('Reputation owner must be an existing freelancer.')
     if not job:
-        raise ValueError(f"Job with ID {job_id} not found in database.")
+        raise ValueError('Job not found.')
+    if not records:
+        raise ValueError('No completed, rated job history is available.')
+    if len(records) > num_past_jobs:
+        raise ValueError(f'Full history has {len(records)} jobs; circuit capacity is {num_past_jobs}. Increase capacity; no records were truncated.')
 
-    # 1. Scale private ratings (e.g. 4.9 -> 490)
-    rating_scaled = int(round(freelancer["rating_score"] * rating_scale))
-    completed_jobs = int(freelancer["completed_jobs"])
-    on_time_rate = int(freelancer["on_time_rate"])
-    disputes = int(freelancer["dispute_count"])
+    scaled = Decimal(str(job['min_rating'])) * 100
+    if not scaled.is_finite() or scaled != scaled.to_integral_value() or not 100 <= scaled <= 500:
+        raise ValueError('Minimum rating must be between 1 and 5 with at most two decimal places.')
+    public_inputs = {
+        'min_rating_scaled': int(scaled),
+        'min_completed_jobs': job['min_completed_jobs'],
+        'min_on_time_rate': job['min_on_time_rate'],
+        'max_disputes': job['max_disputes'],
+    }
+    for value in public_inputs.values():
+        if type(value) is not int or not 0 <= value <= 2**32 - 1:
+            raise ValueError('Public thresholds must be non-negative u32 integers.')
+    if public_inputs['min_on_time_rate'] > 100:
+        raise ValueError('Minimum on-time percentage must be at most 100.')
 
-    # Synthesize representative past job ratings array based on freelancer's rating
-    # E.g., slight variation around rating_scaled
-    recent_ratings = []
-    base_val = rating_scaled
-    variations = [0, 5, -5, 10, -10]
-    for i in range(num_past_jobs):
-        var = variations[i % len(variations)]
-        val = max(100, min(500, base_val + var))
-        recent_ratings.append(val)
-
-    # 2. Public job thresholds
-    min_rating_scaled = int(round(job["min_rating"] * rating_scale))
-    min_completed_jobs = int(job["min_completed_jobs"])
-    min_on_time_rate = int(job["min_on_time_rate"])
-    max_disputes = int(job["max_disputes"])
-
-    # 3. Format TOML content
-    # In Noir TOML, arrays are formatted as [val1, val2, ...]
-    recent_ratings_str = "[" + ", ".join(f'"{r}"' for r in recent_ratings) + "]"
-
-    toml_content = f"""# Prover.toml - Input values for Noir Eligibility Circuit
-# Generated for Freelancer: {freelancer['username']} (ID: {freelancer_id}) -> Job: {job['title']} (ID: {job_id})
-
-# -----------------------------------------------------------------
-# PRIVATE INPUTS (Applicant A Credentials - Kept secret by Prover)
-# -----------------------------------------------------------------
-freelancer_rating_scaled = "{rating_scaled}"
-freelancer_completed_jobs = "{completed_jobs}"
-freelancer_on_time_rate = "{on_time_rate}"
-freelancer_disputes = "{disputes}"
-recent_job_ratings = {recent_ratings_str}
-
-# -----------------------------------------------------------------
-# PUBLIC INPUTS (Job B Criteria - Disclosed publicly)
-# -----------------------------------------------------------------
-min_rating_scaled = "{min_rating_scaled}"
-min_completed_jobs = "{min_completed_jobs}"
-min_on_time_rate = "{min_on_time_rate}"
-max_disputes = "{max_disputes}"
-"""
-
-    if output_path is None:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        output_path = os.path.join(base_dir, "circuit", "Prover.toml")
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(toml_content)
-
+    padding = [0] * (num_past_jobs - len(records))
+    private_inputs = {
+        'ratings': [r['rating_scaled'] for r in records] + padding,
+        'on_time': [r['on_time'] for r in records] + padding,
+        'disputed': [r['disputed'] for r in records] + padding,
+        'valid': [1] * len(records) + padding,
+    }
+    # Never supply claimed aggregate metrics as witness inputs.
+    lines = ['# Full stored job history; private arrays, public job requirements.']
+    for key, values in private_inputs.items():
+        lines.append(key + ' = [' + ', '.join('"' + str(v) + '"' for v in values) + ']')
+    for key, value in public_inputs.items():
+        lines.append(key + ' = "' + str(value) + '"')
+    path = Path(output_path) if output_path else Path(__file__).parent / 'circuit/Prover.toml'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return {
-        "output_path": output_path,
-        "freelancer_username": freelancer["username"],
-        "job_title": job["title"],
-        "private_inputs": {
-            "freelancer_rating_scaled": rating_scaled,
-            "freelancer_completed_jobs": completed_jobs,
-            "freelancer_on_time_rate": on_time_rate,
-            "freelancer_disputes": disputes,
-            "recent_job_ratings": recent_ratings
-        },
-        "public_inputs": {
-            "min_rating_scaled": min_rating_scaled,
-            "min_completed_jobs": min_completed_jobs,
-            "min_on_time_rate": min_on_time_rate,
-            "max_disputes": max_disputes
-        }
+        'output_path': str(path),
+        'freelancer_username': freelancer['username'],
+        'job_title': job['title'],
+        'private_inputs': private_inputs,
+        'public_inputs': public_inputs,
     }
 
-if __name__ == "__main__":
-    f_id = int(sys.argv[1]) if len(sys.argv) > 1 else 3 # alex_dev
-    j_id = int(sys.argv[2]) if len(sys.argv) > 2 else 1 # Job 1
-    res = generate_prover_toml(f_id, j_id)
-    print(f"Generated Prover.toml for {res['freelancer_username']} applying to job '{res['job_title']}':")
-    print(f"Location: {res['output_path']}")
+
+if __name__ == '__main__':
+    result = generate_prover_toml(int(sys.argv[1]) if len(sys.argv) > 1 else 3,
+                                  int(sys.argv[2]) if len(sys.argv) > 2 else 1)
+    print('Generated full-history inputs:', result['output_path'])

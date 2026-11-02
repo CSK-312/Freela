@@ -6,10 +6,10 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'freela.db')
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys = ON')
     return conn
 
-def init_db():
-    conn = get_db_connection()
+def _initialize_schema(conn):
     cursor = conn.cursor()
 
     # Users table
@@ -23,7 +23,8 @@ def init_db():
             full_name TEXT NOT NULL,
             avatar_initials TEXT,
             
-            -- Freelancer private reputation profile (for demonstration & credential issuance)
+            -- Legacy demo totals, retained for migration compatibility only.
+            -- Read users_with_reputation for current values derived from history.
             rating_score REAL DEFAULT 4.9,        -- e.g. 4.9 (out of 5.0)
             completed_jobs INTEGER DEFAULT 35,    -- e.g. 35 completed jobs
             on_time_rate INTEGER DEFAULT 98,      -- e.g. 98%
@@ -206,8 +207,116 @@ def init_db():
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', jobs_seed)
 
-    conn.commit()
-    conn.close()
+    _migrate_reputation(conn)
+
+
+def init_db():
+    """Initialize and migrate atomically; never erase existing demo work."""
+    conn = get_db_connection()
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+        _initialize_schema(conn)
+        if conn.execute('PRAGMA foreign_key_check').fetchone():
+            raise ValueError('Existing database has broken references; migration rolled back.')
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _migrate_reputation(conn):
+    conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)')
+    if conn.execute('SELECT 1 FROM schema_migrations WHERE version = 1').fetchone():
+        return
+    # One row is one completed AND rated historical job. References identify
+    # imported/demo history, independently of the current marketplace listings.
+    conn.execute('''CREATE TABLE reputation_records (
+        id INTEGER PRIMARY KEY,
+        job_reference TEXT NOT NULL UNIQUE CHECK(length(trim(job_reference)) > 0),
+        freelancer_id INTEGER NOT NULL REFERENCES users(id),
+        client_id INTEGER NOT NULL REFERENCES users(id),
+        rating_scaled INTEGER NOT NULL
+            CHECK(typeof(rating_scaled) = 'integer' AND rating_scaled BETWEEN 100 AND 500),
+        on_time INTEGER NOT NULL CHECK(typeof(on_time) = 'integer' AND on_time IN (0, 1)),
+        disputed INTEGER NOT NULL CHECK(typeof(disputed) = 'integer' AND disputed IN (0, 1)),
+        completed_at TEXT NOT NULL CHECK(length(completed_at) = 10
+            AND date(completed_at, '+0 days') IS NOT NULL
+            AND date(completed_at, '+0 days') = completed_at),
+        is_demo INTEGER NOT NULL DEFAULT 0 CHECK(is_demo IN (0, 1)),
+        CHECK(freelancer_id != client_id)
+    )''')
+    conn.execute('CREATE INDEX reputation_by_freelancer ON reputation_records(freelancer_id, completed_at, id)')
+    # Fail rather than silently delete existing duplicates during migration.
+    conn.execute('CREATE UNIQUE INDEX one_application_per_job ON applications(job_id, freelancer_id)')
+    for operation in ('INSERT', 'UPDATE'):
+        conn.execute(f'''CREATE TRIGGER reputation_roles_{operation.lower()}
+            BEFORE {operation} ON reputation_records
+            BEGIN
+                SELECT CASE WHEN COALESCE((SELECT role FROM users WHERE id=NEW.freelancer_id), '') != 'freelancer'
+                    THEN RAISE(ABORT, 'Reputation owner must be a freelancer') END;
+                SELECT CASE WHEN COALESCE((SELECT role FROM users WHERE id=NEW.client_id), '') != 'client'
+                    THEN RAISE(ABORT, 'Reputation reviewer must be a client') END;
+            END''')
+    conn.execute('''CREATE TRIGGER protect_reputation_roles BEFORE UPDATE OF role ON users
+        WHEN NEW.role != OLD.role AND (
+            EXISTS(SELECT 1 FROM reputation_records WHERE freelancer_id=OLD.id)
+            OR EXISTS(SELECT 1 FROM reputation_records WHERE client_id=OLD.id))
+        BEGIN SELECT RAISE(ABORT, 'User role is referenced by reputation history'); END''')
+    # Old summary columns remain only for non-destructive migration compatibility.
+    # All application/prover reads use this derived view, not those stale columns.
+    conn.execute('''CREATE VIEW users_with_reputation AS
+        SELECT u.id, u.username, u.email, u.password_hash, u.role, u.full_name,
+            u.avatar_initials, u.created_at,
+            COALESCE(r.rating_sum, 0) AS rating_sum,
+            COALESCE(r.on_time_count, 0) AS on_time_count,
+            COALESCE(r.job_count, 0) AS completed_jobs,
+            COALESCE(r.disputes, 0) AS dispute_count,
+            COALESCE(r.rating_sum / (100.0 * r.job_count), 0) AS rating_score,
+            COALESCE(100.0 * r.on_time_count / r.job_count, 0) AS on_time_rate,
+            COALESCE(r.rating_sum / r.job_count, 0) AS rating_scaled_floor,
+            COALESCE(100 * r.on_time_count / r.job_count, 0) AS on_time_rate_floor
+        FROM users u LEFT JOIN (
+            SELECT freelancer_id, COUNT(*) AS job_count, SUM(rating_scaled) AS rating_sum,
+                SUM(on_time) AS on_time_count, SUM(disputed) AS disputes
+            FROM reputation_records GROUP BY freelancer_id
+        ) r ON r.freelancer_id = u.id''')
+    _seed_demo_history(conn)
+    conn.execute('INSERT INTO schema_migrations(version) VALUES (1)')
+
+
+def _seed_demo_history(conn):
+    """Explicit presentation fixtures, NOT reconstruction of legacy totals."""
+    from datetime import date, timedelta
+    # username, number of records, rating pattern, late jobs, disputed jobs
+    examples = [
+        ('alex_dev', 40, [480, 490, 500, 490], 1, 0),
+        ('sara_design', 30, [470, 480, 490], 2, 1),
+        ('john_writer', 25, [480, 490, 500, 490, 490], 1, 0),
+        ('data_guru', 35, [470, 480, 490, 480, 480], 3, 1),
+        ('elena_ui', 20, [490, 500], 0, 0),
+    ]
+    client = conn.execute("SELECT id FROM users WHERE username='client_alice' AND role='client'").fetchone()
+    if client is None:
+        return
+    for username, count, ratings, late, disputes in examples:
+        user = conn.execute("SELECT id FROM users WHERE username=? AND role='freelancer'", (username,)).fetchone()
+        if user is None:
+            continue
+        conn.executemany('''INSERT INTO reputation_records
+            (job_reference, freelancer_id, client_id, rating_scaled, on_time, disputed, completed_at, is_demo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1)''', [
+                (f'DEMO-{username}-{i + 1:03}', user['id'], client['id'], ratings[i % len(ratings)],
+                 int(i >= late), int(i < disputes), (date(2026, 1, 1) + timedelta(days=i)).isoformat())
+                for i in range(count)
+            ])
+
+
+def get_reputation_records(conn, freelancer_id):
+    """Return the complete private history in a deterministic order for the prover."""
+    return conn.execute('''SELECT * FROM reputation_records WHERE freelancer_id = ?
+        ORDER BY completed_at, id''', (freelancer_id,)).fetchall()
 
 if __name__ == '__main__':
     init_db()

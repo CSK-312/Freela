@@ -2,7 +2,7 @@ import os
 import subprocess
 import shutil
 import binascii
-from generate_circuit import generate_main_nr
+from generate_circuit import generate_main_nr, DEFAULT_HISTORY_CAPACITY
 from generate_prover import generate_prover_toml
 
 NARGO_BIN = os.path.expanduser("~/.nargo/bin/nargo")
@@ -13,13 +13,13 @@ CIRCUIT_DIR = os.path.join(BASE_DIR, "circuit")
 def compile_circuit_if_needed():
     """Ensure circuit is compiled into ACIR JSON format"""
     target_json = os.path.join(CIRCUIT_DIR, "target", "circuit.json")
-    if not os.path.exists(target_json):
-        res = subprocess.run([NARGO_BIN, "compile"], cwd=CIRCUIT_DIR, capture_output=True, text=True)
-        if res.returncode != 0:
-            raise RuntimeError(f"Nargo compilation error: {res.stderr}")
+    # Never reuse the committed artifact from the old aggregate-input circuit.
+    res = subprocess.run([NARGO_BIN, "compile"], cwd=CIRCUIT_DIR, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"Nargo compilation error: {res.stderr}")
     return target_json
 
-def generate_and_verify_zk_proof(freelancer_id: int, job_id: int, num_past_jobs: int = 5):
+def generate_and_verify_zk_proof(freelancer_id: int, job_id: int, num_past_jobs: int = DEFAULT_HISTORY_CAPACITY):
     """
     Executes the full pipeline:
       1. Generates main.nr (if customized) and ensures compilation
@@ -30,20 +30,16 @@ def generate_and_verify_zk_proof(freelancer_id: int, job_id: int, num_past_jobs:
     
     Returns dict with proof hex, verification status, timings/logs.
     """
-    # 1. Update/ensure main.nr
-    generate_main_nr(output_path=os.path.join(CIRCUIT_DIR, "src", "main.nr"), num_past_jobs=num_past_jobs)
-    
-    # Force compile to ensure latest AST matches
-    subprocess.run([NARGO_BIN, "compile"], cwd=CIRCUIT_DIR, check=True, capture_output=True)
-    
-    # 2. Generate Prover.toml from DB
+    # Validate and export every stored record before invoking the proof tools.
     prover_data = generate_prover_toml(
         freelancer_id=freelancer_id,
         job_id=job_id,
         output_path=os.path.join(CIRCUIT_DIR, "Prover.toml"),
         num_past_jobs=num_past_jobs
     )
-    
+    generate_main_nr(output_path=os.path.join(CIRCUIT_DIR, "src", "main.nr"), num_past_jobs=num_past_jobs)
+    compile_circuit_if_needed()
+
     # 3. Solve witness via nargo execute
     exec_res = subprocess.run(
         [NARGO_BIN, "execute", "witness"],

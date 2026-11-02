@@ -31,8 +31,8 @@
         <div style="font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 6px;">
           <span>Switch demo user:</span>
           <select onchange="window.location.href='/switch-user/' + this.value" style="padding: 4px 8px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 12px; background: #fff; cursor: pointer;">
-            <option value="3" {% if session.get('user_id') == 3 %}selected{% endif %}>Freelancer: alex_dev (4.9★, 120 jobs)</option>
-            <option value="4" {% if session.get('user_id') == 4 %}selected{% endif %}>Freelancer: sara_design (4.8★, 95 jobs)</option>
+            <option value="3" {% if session.get('user_id') == 3 %}selected{% endif %}>Freelancer: alex_dev</option>
+            <option value="4" {% if session.get('user_id') == 4 %}selected{% endif %}>Freelancer: sara_design</option>
             <option value="1" {% if session.get('user_id') == 1 %}selected{% endif %}>Client: Alice Morgan</option>
             <option value="2" {% if session.get('user_id') == 2 %}selected{% endif %}>Client: Nexus TechCorp</option>
           </select>

@@ -109,7 +109,7 @@
       </div>
       <div>
         <div style="font-size: 15px; font-weight: 700; color: #0f172a;">
-          Freelancer Private Reputation Vault (Signed Credential)
+          Freelancer Reputation (Stored Demo Job History)
         </div>
         <div style="font-size: 13px; color: #64748b;">
           Logged in as <strong>{{ current_freelancer.full_name }}</strong>. These stats remain completely secret during Noir ZK proof generation.
@@ -120,7 +120,7 @@
     <div style="display: flex; gap: 20px; align-items: center;">
       <div style="text-align: center;">
         <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Rating</span>
-        <span style="font-size: 16px; font-weight: 800; color: #0f172a;"><i class="fa-solid fa-star" style="color: #f59e0b; font-size: 13px;"></i> {{ current_freelancer.rating_score }}</span>
+        <span style="font-size: 16px; font-weight: 800; color: #0f172a;"><i class="fa-solid fa-star" style="color: #f59e0b; font-size: 13px;"></i> {{ "%.2f"|format(current_freelancer.rating_score) }}</span>
       </div>
       <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
         <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Jobs Done</span>
@@ -128,7 +128,7 @@
       </div>
       <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
         <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">On-Time %</span>
-        <span style="font-size: 16px; font-weight: 800; color: #10b981;">{{ current_freelancer.on_time_rate }}%</span>
+        <span style="font-size: 16px; font-weight: 800; color: #10b981;">{{ "%.2f"|format(current_freelancer.on_time_rate) }}%</span>
       </div>
       <div style="text-align: center; border-left: 1px solid #e2e8f0; padding-left: 20px;">
         <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Disputes</span>
@@ -396,10 +396,11 @@ function openApplyModal(jobId, jobTitle, budget, minRating, minJobs, minOntime, 
         document.getElementById('zkProofHex').value = simulatedProof;
         document.getElementById('zkPublicInputs').value = JSON.stringify(data.noir_public_inputs);
 
-        codeBox.innerHTML = `[Noir main.nr Compiled AST]
-> Private witness: rating=${data.noir_private_inputs.rating}, jobs=${data.noir_private_inputs.completed_jobs}, ontime=${data.noir_private_inputs.on_time_rate}%, disputes=${data.noir_private_inputs.disputes} [KEPT SECRET]
+        codeBox.innerHTML = `[Eligibility preview - proof not generated yet]
+> Display-only summary: rating=${data.preview_stats.rating}, jobs=${data.preview_stats.completed_jobs}, ontime=${data.preview_stats.on_time_rate}%, disputes=${data.preview_stats.disputes} [not circuit inputs]
 > Public inputs: min_rating=${data.noir_public_inputs.min_rating}, min_jobs=${data.noir_public_inputs.min_completed_jobs}, min_ontime=${data.noir_public_inputs.min_on_time_rate}%, max_disputes=${data.noir_public_inputs.max_disputes}
-> Dynamic Prover.toml generated from database
+> On submission: all stored job ratings, on-time flags and dispute flags enter the private witness.
+> Noir calculates totals and checks thresholds using cross multiplication.
 [Ready for Barretenberg UltraHonk Engine]
 > Clicking "Generate Proof & Apply" will run:
    1. python3 generate_circuit.py (parameterizes main.nr)
