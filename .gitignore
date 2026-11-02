@@ -1,4 +1,16 @@
 .local/
 __pycache__/
 *.pyc
-circuit/target/proof-current/
+venv/
+.venv/
+.claude/
+
+# Runtime database (recreated and seeded by init_db on startup)
+freela.db
+freela.db-wal
+freela.db-shm
+
+# Generated proof inputs and outputs contain private witness data
+circuit/Prover.toml
+circuit/target/
+circuit_commit/target/

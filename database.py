@@ -1,13 +1,22 @@
 import sqlite3
 import os
 
+from werkzeug.security import generate_password_hash
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'freela.db')
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA foreign_keys = ON')
+    # Wait for a concurrent writer instead of failing immediately with "database is locked".
+    conn.execute('PRAGMA busy_timeout = 5000')
     return conn
+
+
+def hash_password(password):
+    # PBKDF2 rather than werkzeug's scrypt default: macOS system Python lacks hashlib.scrypt.
+    return generate_password_hash(password, method='pbkdf2:sha256')
 
 def _initialize_schema(conn):
     cursor = conn.cursor()
@@ -102,9 +111,8 @@ def _initialize_schema(conn):
     # Seed users if empty
     cursor.execute('SELECT COUNT(*) as count FROM users')
     if cursor.fetchone()['count'] == 0:
-        # Default mock users (password: 'password123' hashed with simple SHA-256 for easy review/test)
-        import hashlib
-        pwd_hash = hashlib.sha256('password123'.encode('utf-8')).hexdigest()
+        # Demo accounts all use the password 'password123' (salted werkzeug hash).
+        pwd_hash = hash_password('password123')
         
         users_seed = [
             # Clients
@@ -208,12 +216,17 @@ def _initialize_schema(conn):
         ''', jobs_seed)
 
     _migrate_reputation(conn)
+    _migrate_marketplace(conn)
+    _migrate_credentials(conn)
 
 
 def init_db():
     """Initialize and migrate atomically; never erase existing demo work."""
     conn = get_db_connection()
     try:
+        # WAL lets page reads continue while another request writes. It is a
+        # persistent file setting and cannot be changed inside a transaction.
+        conn.execute('PRAGMA journal_mode = WAL')
         conn.execute('BEGIN IMMEDIATE')
         _initialize_schema(conn)
         if conn.execute('PRAGMA foreign_key_check').fetchone():
@@ -284,6 +297,87 @@ def _migrate_reputation(conn):
         ) r ON r.freelancer_id = u.id''')
     _seed_demo_history(conn)
     conn.execute('INSERT INTO schema_migrations(version) VALUES (1)')
+
+
+def _migrate_marketplace(conn):
+    """Version 2: hiring lifecycle columns, reviews, and a reputation view without credentials."""
+    if conn.execute('SELECT 1 FROM schema_migrations WHERE version = 2').fetchone():
+        return
+    # The original jobs.status CHECK (open/in_progress/completed) is kept to avoid a
+    # table rebuild. "Delivered, awaiting approval" is in_progress with delivered_at set.
+    for column in ('hired_freelancer_id INTEGER REFERENCES users(id)',
+                   'accepted_at TEXT', 'delivered_at TEXT', 'completed_at TEXT'):
+        conn.execute(f'ALTER TABLE jobs ADD COLUMN {column}')
+    conn.execute('''ALTER TABLE applications ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'accepted', 'rejected', 'withdrawn'))''')
+    conn.execute('CREATE INDEX jobs_by_client ON jobs(client_id, status)')
+    # One review per person per job. Client reviews of freelancers also become
+    # reputation_records rows; reviews hold the comment and the two-way record.
+    conn.execute('''CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY,
+        job_id INTEGER NOT NULL REFERENCES jobs(id),
+        reviewer_id INTEGER NOT NULL REFERENCES users(id),
+        reviewee_id INTEGER NOT NULL REFERENCES users(id),
+        rating_scaled INTEGER NOT NULL
+            CHECK(typeof(rating_scaled) = 'integer' AND rating_scaled BETWEEN 100 AND 500),
+        comment TEXT NOT NULL DEFAULT '' CHECK(length(comment) <= 2000),
+        disputed INTEGER NOT NULL DEFAULT 0 CHECK(disputed IN (0, 1)),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(job_id, reviewer_id),
+        CHECK(reviewer_id != reviewee_id)
+    )''')
+    # Same derived values as version 1, minus email and password_hash, so no page
+    # reading reputation can ever leak credentials. Login reads the users table.
+    conn.execute('DROP VIEW users_with_reputation')
+    conn.execute('''CREATE VIEW users_with_reputation AS
+        SELECT u.id, u.username, u.role, u.full_name, u.avatar_initials, u.created_at,
+            COALESCE(r.rating_sum, 0) AS rating_sum,
+            COALESCE(r.on_time_count, 0) AS on_time_count,
+            COALESCE(r.job_count, 0) AS completed_jobs,
+            COALESCE(r.disputes, 0) AS dispute_count,
+            COALESCE(r.rating_sum / (100.0 * r.job_count), 0) AS rating_score,
+            COALESCE(100.0 * r.on_time_count / r.job_count, 0) AS on_time_rate,
+            COALESCE(r.rating_sum / r.job_count, 0) AS rating_scaled_floor,
+            COALESCE(100 * r.on_time_count / r.job_count, 0) AS on_time_rate_floor
+        FROM users u LEFT JOIN (
+            SELECT freelancer_id, COUNT(*) AS job_count, SUM(rating_scaled) AS rating_sum,
+                SUM(on_time) AS on_time_count, SUM(disputed) AS disputes
+            FROM reputation_records GROUP BY freelancer_id
+        ) r ON r.freelancer_id = u.id''')
+    conn.execute('INSERT INTO schema_migrations(version) VALUES (2)')
+
+
+def _migrate_credentials(conn):
+    """Version 3: issued history commitments, and what each application's proof was checked against."""
+    if conn.execute('SELECT 1 FROM schema_migrations WHERE version = 3').fetchone():
+        return
+    # One row per issuance. The newest unrevoked version is the freelancer's current
+    # credential; a proof must commit to exactly that history. Field elements are
+    # stored as 0x-prefixed 64-digit hex. The salt is secret and only feeds the prover.
+    conn.execute('''CREATE TABLE credentials (
+        id INTEGER PRIMARY KEY,
+        freelancer_id INTEGER NOT NULL REFERENCES users(id),
+        version INTEGER NOT NULL CHECK(version > 0),
+        commitment TEXT NOT NULL CHECK(length(commitment) = 66 AND commitment LIKE '0x%'),
+        salt TEXT NOT NULL CHECK(length(salt) = 66 AND salt LIKE '0x%'),
+        record_count INTEGER NOT NULL CHECK(record_count > 0),
+        issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        revoked_at TIMESTAMP,
+        UNIQUE(freelancer_id, version)
+    )''')
+    conn.execute('''CREATE TRIGGER credential_owner_is_freelancer BEFORE INSERT ON credentials
+        BEGIN
+            SELECT CASE WHEN COALESCE((SELECT role FROM users WHERE id=NEW.freelancer_id), '') != 'freelancer'
+                THEN RAISE(ABORT, 'Credential owner must be a freelancer') END;
+        END''')
+    conn.execute('ALTER TABLE applications ADD COLUMN credential_id INTEGER REFERENCES credentials(id)')
+    conn.execute('ALTER TABLE applications ADD COLUMN vk_hash TEXT')
+    conn.execute('INSERT INTO schema_migrations(version) VALUES (3)')
+
+
+def get_current_credential(conn, freelancer_id):
+    return conn.execute('''SELECT * FROM credentials WHERE freelancer_id = ? AND revoked_at IS NULL
+        ORDER BY version DESC LIMIT 1''', (freelancer_id,)).fetchone()
 
 
 def _seed_demo_history(conn):

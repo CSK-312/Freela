@@ -40,6 +40,9 @@
 }
 
 body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
   font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   background-color: var(--bg-main);
   color: var(--text-main);
@@ -753,6 +756,7 @@ a {
 
 .zk-status-badge {
   display: inline-flex;
+  white-space: nowrap;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
@@ -840,3 +844,193 @@ a {
   border-color: #3b82f6;
 }
 
+
+/* Job page & dashboards */
+.panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.form-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 6px;
+}
+
+.form-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.table-wrap .db-table {
+  margin-top: 0;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.pill-open,
+.pill-pending {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
+.pill-in_progress {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.pill-delivered {
+  background: #f5f3ff;
+  color: #6d28d9;
+  border-color: #ddd6fe;
+}
+
+.pill-completed,
+.pill-accepted {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+
+.pill-rejected,
+.pill-withdrawn {
+  background: #f1f5f9;
+  color: #64748b;
+  border-color: #e2e8f0;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Keep the footer at the bottom of short pages */
+main {
+  flex: 1;
+}
+
+/* Phones and small tablets */
+@media (max-width: 860px) {
+  .navbar {
+    height: auto;
+    padding-top: 10px;
+  }
+  .nav-container {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding: 0 16px;
+  }
+  .nav-links {
+    order: 3;
+    width: 100%;
+    gap: 20px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .nav-link {
+    display: inline-block;
+    white-space: nowrap;
+    font-size: 14px;
+    padding: 8px 0 10px 0;
+  }
+  .nav-link.active::after {
+    bottom: 0;
+  }
+  .main-wrapper {
+    padding: 20px 16px 48px 16px;
+  }
+  .hero-illustration {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .brand {
+    font-size: 20px;
+  }
+  .user-meta {
+    display: none;
+  }
+  .user-badge {
+    padding: 4px 8px 4px 4px;
+    gap: 6px;
+  }
+  .nav-actions .btn {
+    padding: 6px 12px;
+  }
+  .hero-title {
+    font-size: 28px;
+  }
+  .panel {
+    padding: 16px;
+  }
+}
+
+/* Visible keyboard focus everywhere */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #059669;
+  outline-offset: 2px;
+}
