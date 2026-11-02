@@ -26,9 +26,9 @@
   <div style="background: #fff; border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 24px; margin-bottom: 32px; box-shadow: var(--shadow-sm);">
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
       <h2 style="font-size: 16px; font-weight: 700; color: #0f172a;">
-        Table: <code>users</code> ({{ users|length }} records)
+        View: <code>users_with_reputation</code> ({{ users|length }} accounts)
       </h2>
-      <span style="font-size: 12px; color: #10b981; font-weight: 600;"><i class="fa-solid fa-lock"></i> Private Freelancer Credentials Stored Here</span>
+      <span style="font-size: 12px; color: #10b981; font-weight: 600;">Presentation inspector: totals derived from stored demo job records</span>
     </div>
 
     <div style="overflow-x: auto;">
@@ -57,9 +57,9 @@
               </span>
             </td>
             <td>{{ u.full_name }}</td>
-            <td style="font-weight: 700;">{{ u.rating_score }}★</td>
+            <td style="font-weight: 700;">{{ "%.2f"|format(u.rating_score) }}★</td>
             <td>{{ u.completed_jobs }}</td>
-            <td>{{ u.on_time_rate }}%</td>
+            <td>{{ "%.2f"|format(u.on_time_rate) }}%</td>
             <td>{{ u.dispute_count }}</td>
             <td style="color: #64748b; font-size: 12px;">{{ u.created_at }}</td>
           </tr>

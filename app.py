@@ -56,7 +56,7 @@ def home():
     current_freelancer = None
     if session.get('role') == 'freelancer':
         current_freelancer = conn.execute(
-            'SELECT * FROM users WHERE id = ?', (session.get('user_id'),)
+            'SELECT * FROM users_with_reputation WHERE id = ?', (session.get('user_id'),)
         ).fetchone()
 
     # Recent applied jobs for current user
@@ -118,7 +118,7 @@ def logout():
 def switch_user(user_id):
     """Quick helper for test convenience to switch between Client and Freelancer accounts"""
     conn = get_db_connection()
-    user = conn.execute('SELECT * FROM users WHERE id = ?', (user_id,)).fetchone()
+    user = conn.execute('SELECT * FROM users_with_reputation WHERE id = ?', (user_id,)).fetchone()
     conn.close()
     if user:
         session['user_id'] = user['id']
@@ -174,33 +174,33 @@ def check_eligibility(job_id):
 
     conn = get_db_connection()
     job = conn.execute('SELECT * FROM jobs WHERE id = ?', (job_id,)).fetchone()
-    freelancer = conn.execute('SELECT * FROM users WHERE id = ?', (session['user_id'],)).fetchone()
+    freelancer = conn.execute('SELECT * FROM users_with_reputation WHERE id = ?', (session['user_id'],)).fetchone()
     conn.close()
 
     if not job or not freelancer:
         return jsonify({'error': 'Job or User not found'}), 404
 
     # Private inputs vs Public criteria check
-    satisfies_rating = freelancer['rating_score'] >= job['min_rating']
+    satisfies_rating = freelancer['rating_sum'] >= round(job['min_rating'] * 100) * freelancer['completed_jobs']
     satisfies_jobs = freelancer['completed_jobs'] >= job['min_completed_jobs']
-    satisfies_ontime = freelancer['on_time_rate'] >= job['min_on_time_rate']
+    satisfies_ontime = 100 * freelancer['on_time_count'] >= job['min_on_time_rate'] * freelancer['completed_jobs']
     satisfies_disputes = freelancer['dispute_count'] <= job['max_disputes']
 
-    is_eligible = satisfies_rating and satisfies_jobs and satisfies_ontime and satisfies_disputes
+    is_eligible = freelancer['completed_jobs'] > 0 and satisfies_rating and satisfies_jobs and satisfies_ontime and satisfies_disputes
 
     # Format public criteria (to be used later by Noir & Barretenberg)
     public_inputs = {
-        "min_rating": int(job['min_rating'] * 100),  # e.g. 4.8 -> 480
+        "min_rating": int(round(job['min_rating'] * 100)),  # e.g. 4.8 -> 480
         "min_completed_jobs": job['min_completed_jobs'],
         "min_on_time_rate": job['min_on_time_rate'],
         "max_disputes": job['max_disputes']
     }
 
-    # Format private witness
+    # Display-only summary. The actual witness contains full record arrays.
     private_inputs = {
-        "rating": int(freelancer['rating_score'] * 100),
+        "rating": freelancer['rating_scaled_floor'],
         "completed_jobs": freelancer['completed_jobs'],
-        "on_time_rate": freelancer['on_time_rate'],
+        "on_time_rate": freelancer['on_time_rate_floor'],
         "disputes": freelancer['dispute_count']
     }
 
@@ -219,7 +219,7 @@ def check_eligibility(job_id):
             'disputes': freelancer['dispute_count']
         },
         'noir_public_inputs': public_inputs,
-        'noir_private_inputs': private_inputs
+        'preview_stats': private_inputs
     })
 
 @app.route('/jobs/<int:job_id>/apply', methods=['POST'])
@@ -288,7 +288,7 @@ def apply_job(job_id):
 def database_viewer():
     """Simple UI to easily inspect and review the SQLite database directly from the browser"""
     conn = get_db_connection()
-    users = conn.execute('SELECT * FROM users').fetchall()
+    users = conn.execute('SELECT * FROM users_with_reputation').fetchall()
     jobs = conn.execute('''
         SELECT j.*, u.full_name as client_name 
         FROM jobs j JOIN users u ON j.client_id = u.id
