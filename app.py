@@ -230,8 +230,6 @@ def apply_job(job_id):
 
     cover_note = request.form.get('cover_note', '')
     bid_amount = float(request.form.get('bid_amount', 0))
-    proof_hex = request.form.get('zk_proof_hex', '')
-    public_inputs_json = request.form.get('zk_public_inputs', '')
 
     conn = get_db_connection()
     # Check if already applied
@@ -250,13 +248,21 @@ def apply_job(job_id):
     # Generate the cryptographic UltraHonk proof with Noir + Barretenberg
     try:
         zk_res = generate_and_verify_zk_proof(freelancer_id=session['user_id'], job_id=job_id)
-        if not zk_res.get('success'):
-            flash(f"Proof Generation Failed: {zk_res.get('error')}", 'danger')
+        if zk_res.get('success') is not True:
+            flash(f"Proof failed: {zk_res.get('error') or 'The proof process did not complete.'} Application not submitted.", 'danger')
             conn.close()
             return redirect(url_for('home'))
 
-        is_verified = 1 if zk_res.get('verified') else 0
+        if zk_res.get('verified') is not True:
+            flash('Proof verification failed. Application not submitted.', 'danger')
+            conn.close()
+            return redirect(url_for('home'))
+
         real_proof_hex = zk_res.get('proof_hex', '')
+        if not real_proof_hex:
+            flash('Verified proof data is missing. Application not submitted.', 'danger')
+            conn.close()
+            return redirect(url_for('home'))
         public_inputs_json = json.dumps(zk_res['prover_data']['public_inputs'])
 
         conn.execute('''
@@ -267,17 +273,14 @@ def apply_job(job_id):
             session['user_id'],
             cover_note,
             bid_amount,
-            is_verified,
+            1,
             real_proof_hex,
             public_inputs_json
         ))
         conn.commit()
         conn.close()
 
-        if is_verified:
-            flash('Success! UltraHonk ZK Proof generated via Noir & verified via Barretenberg (Proof length: ' + str(len(real_proof_hex)) + ' hex chars).', 'success')
-        else:
-            flash('Warning: Proof generated but verification failed.', 'warning')
+        flash('Success! UltraHonk ZK Proof generated via Noir & verified via Barretenberg (Proof length: ' + str(len(real_proof_hex)) + ' hex chars).', 'success')
     except Exception as e:
         conn.close()
         flash(f"ZK Engine Error: {str(e)}", 'danger')

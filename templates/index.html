@@ -264,11 +264,17 @@
             <td><span class="criteria-tag">{{ app.category }}</span></td>
             <td style="font-weight: 700; color: #0f172a;">${{ "%.0f"|format(app.bid_amount) }}</td>
             <td>
+              {% if app.proof_verified == 1 %}
               <span class="zk-status-badge zk-status-success">
                 <i class="fa-solid fa-check-circle"></i> ZK Proof Verified
               </span>
+              {% else %}
+              <span class="zk-status-badge zk-status-warning">
+                <i class="fa-solid fa-circle-exclamation"></i> Not verified
+              </span>
+              {% endif %}
             </td>
-            <td><code style="font-size: 11px; background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">{{ app.zk_proof_hex[:24] }}...</code></td>
+            <td><code style="font-size: 11px; background: #f1f5f9; padding: 2px 6px; border-radius: 4px;">{{ (app.zk_proof_hex or '')[:24] }}...</code></td>
             <td style="color: #64748b;">{{ app.applied_at }}</td>
           </tr>
           {% endfor %}
