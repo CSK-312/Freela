@@ -21,7 +21,7 @@
         <li><a href="{{ url_for('home') }}" class="nav-link {% if request.endpoint == 'home' %}active{% endif %}">Home</a></li>
         {% if current_user %}
         <li><a href="{{ url_for('home') }}#browse" class="nav-link">Browse Jobs</a></li>
-        <li><a href="{{ url_for('dashboard') }}" class="nav-link {% if request.endpoint == 'dashboard' %}active{% endif %}"><i class="fa-solid fa-table-columns"></i> Dashboard</a></li>
+        <li><a href="{{ url_for('admin_dashboard') if current_user.role == 'admin' else url_for('dashboard') }}" class="nav-link {% if request.endpoint in ('dashboard', 'admin_dashboard') %}active{% endif %}"><i class="fa-solid fa-table-columns"></i> Dashboard</a></li>
         {% endif %}
         {% if current_user and current_user.role == 'client' %}
         <li><a href="{{ url_for('create_job') }}" class="nav-link {% if request.endpoint == 'create_job' %}active{% endif %}"><i class="fa-solid fa-plus-circle"></i> Post Job</a></li>

@@ -30,13 +30,17 @@ python3 -m venv .venv
 .venv/bin/python app.py
 ```
 
-Open http://localhost:5001 (port 5000 is taken by AirPlay on macOS). The database `freela.db` is created and seeded on first start; delete it to start fresh. The first application after a restart takes a few extra seconds while the circuits compile.
+Open http://localhost:5001 (port 5000 is taken by AirPlay on macOS). The database `freela.db` is created and seeded on first start. The first application after a restart takes a few extra seconds while the circuits compile.
 
 Optional settings (environment variables): `FREELA_SECRET_KEY` (otherwise one is generated into `.local/`), `FREELA_PORT`, `FREELA_DEBUG=1`, `NARGO_BIN` / `BB_BIN` (tool paths), `FREELA_WSL_DISTRO`.
 
 ## Demo
 
-All seeded accounts use the password `password123`.
+On first start, the app replaces the old public seed password with a unique random password for each demo account. Read the local `.local/demo-credentials.txt` file for the usernames and passwords. It is ignored by Git. If an older credentials file exists when the database still has public passwords, the app keeps that file as a local `.backup-*` copy and writes fresh credentials.
+
+The presentation admin is `presentation_admin`. Its random password is in `.local/admin-credentials.txt`. The admin can view demo accounts, jobs, and full reputation records at `/admin`; public sign-up cannot create an admin. The admin credentials file must stay with the local database too.
+
+To reset the presentation data, stop the app, then remove `freela.db`, `.local/demo-credentials.txt`, and `.local/admin-credentials.txt` together. Start the app again to recreate the sample database and issue new passwords. Any older `.backup-*` credentials files are historical copies and are not used on restart.
 
 | Account | Role | Notes |
 |---|---|---|

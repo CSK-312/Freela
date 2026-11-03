@@ -10,6 +10,7 @@ import re
 import secrets
 import sqlite3
 from werkzeug.security import check_password_hash
+import database
 from database import get_db_connection, init_db, hash_password, get_current_credential
 from generate_circuit import DEFAULT_HISTORY_CAPACITY
 
@@ -43,6 +44,44 @@ app.config.update(
 # Ensure database is present
 init_db()
 
+
+def prepare_demo_credentials():
+    """Replace published seed passwords with local presenter-only passwords."""
+    seed_names = ('client_alice', 'client_techcorp', 'alex_dev', 'sara_design',
+                  'john_writer', 'data_guru', 'elena_ui')
+    conn = get_db_connection()
+    try:
+        rows = conn.execute('SELECT id, username, password_hash FROM users WHERE username IN (' +
+                            ','.join('?' for _ in seed_names) + ')', seed_names).fetchall()
+        exposed = [row for row in rows if _password_matches(row['password_hash'], 'password123')]
+        if not exposed:
+            return
+        path = os.path.join(os.path.dirname(database.DB_PATH), '.local', 'demo-credentials.txt')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        credentials = [(row, secrets.token_urlsafe(18)) for row in exposed]
+        backup_path = None
+        try:
+            if os.path.exists(path):
+                backup_path = path + '.backup-' + secrets.token_hex(4)
+                os.replace(path, backup_path)
+            with open(path, 'x', encoding='utf-8') as file:
+                for row, password in credentials:
+                    file.write(f"{row['username']}: {password}\n")
+            for row, password in credentials:
+                conn.execute('UPDATE users SET password_hash = ? WHERE id = ?',
+                             (hash_password(password), row['id']))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            if os.path.exists(path):
+                os.unlink(path)
+            if backup_path:
+                os.replace(backup_path, path)
+            raise
+    finally:
+        conn.close()
+
+
 USERNAME_RE = re.compile(r'[A-Za-z0-9_]{3,30}')
 MIN_PASSWORD_LENGTH = 8
 LEGACY_SHA256_RE = re.compile(r'[0-9a-f]{64}')
@@ -54,6 +93,38 @@ def _password_matches(stored_hash, password):
     if LEGACY_SHA256_RE.fullmatch(stored_hash):
         return hmac.compare_digest(stored_hash, hashlib.sha256(password.encode('utf-8')).hexdigest())
     return check_password_hash(stored_hash, password)
+
+
+prepare_demo_credentials()
+
+
+def prepare_admin_account():
+    """Create one local presentation admin without a published password."""
+    path = os.path.join(os.path.dirname(database.DB_PATH), '.local', 'admin-credentials.txt')
+    conn = get_db_connection()
+    try:
+        if conn.execute('SELECT 1 FROM admins').fetchone():
+            return
+        if os.path.exists(path):
+            raise RuntimeError('Admin credentials exist without an admin account. Check the local database.')
+        password = secrets.token_urlsafe(24)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path, 'x', encoding='utf-8') as file:
+                file.write(f'presentation_admin: {password}\n')
+            conn.execute('INSERT INTO admins(username, password_hash) VALUES (?, ?)',
+                         ('presentation_admin', hash_password(password)))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            if os.path.exists(path):
+                os.unlink(path)
+            raise
+    finally:
+        conn.close()
+
+
+prepare_admin_account()
 
 
 def csrf_token():
@@ -82,6 +153,16 @@ def load_user_and_protect():
         conn.close()
         if g.user is None:
             session.clear()
+    elif 'admin_id' in session:
+        conn = get_db_connection()
+        admin = conn.execute('SELECT id, username FROM admins WHERE id = ?',
+                             (session['admin_id'],)).fetchone()
+        conn.close()
+        if admin is None:
+            session.clear()
+        else:
+            g.user = {'id': admin['id'], 'username': admin['username'],
+                      'full_name': 'Presentation Admin', 'avatar_initials': 'PA', 'role': 'admin'}
 
     if request.method == 'POST':
         token = session.get('csrf_token')
@@ -196,6 +277,8 @@ def form_decimal(name, label, low, high, places=2):
 
 @app.route('/')
 def home():
+    if g.user['role'] == 'admin':
+        return redirect(url_for('admin_dashboard'))
     conn = get_db_connection()
     category_filter = request.args.get('category', 'all')
     search_query = request.args.get('q', '').strip()
@@ -302,6 +385,8 @@ def job_detail(job_id):
 
 @app.route('/dashboard')
 def dashboard():
+    if g.user['role'] == 'admin':
+        return redirect(url_for('admin_dashboard'))
     conn = get_db_connection()
     if g.user['role'] == 'client':
         jobs = conn.execute('''
@@ -353,6 +438,21 @@ def _start_session(user_id):
     session['user_id'] = user_id
 
 
+@app.route('/admin')
+@role_required('admin')
+def admin_dashboard():
+    conn = get_db_connection()
+    try:
+        users = conn.execute('SELECT id, username, role FROM users ORDER BY id').fetchall()
+        jobs = conn.execute('SELECT id, title, status FROM jobs ORDER BY id DESC').fetchall()
+        records = conn.execute('''SELECT r.job_reference, u.username AS freelancer,
+            r.rating_scaled, r.on_time, r.disputed FROM reputation_records r
+            JOIN users u ON u.id = r.freelancer_id ORDER BY r.id DESC''').fetchall()
+    finally:
+        conn.close()
+    return render_template('admin.html', users=users, jobs=jobs, records=records)
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if g.user:
@@ -373,6 +473,13 @@ def login():
             _start_session(user['id'])
             flash('Logged in successfully!', 'success')
             return redirect(url_for('home'))
+        admin = conn.execute('SELECT id, password_hash FROM admins WHERE username = ? COLLATE NOCASE',
+                             (username,)).fetchone()
+        if admin and check_password_hash(admin['password_hash'], password):
+            conn.close()
+            session.clear()
+            session['admin_id'] = admin['id']
+            return redirect(url_for('admin_dashboard'))
         conn.close()
         flash('Invalid username or password.', 'danger')
 
@@ -397,7 +504,8 @@ def register():
         else:
             conn = get_db_connection()
             try:
-                if conn.execute('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE', (username,)).fetchone():
+                if (conn.execute('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE', (username,)).fetchone()
+                        or conn.execute('SELECT 1 FROM admins WHERE username = ? COLLATE NOCASE', (username,)).fetchone()):
                     flash('That username is taken.', 'danger')
                 else:
                     # users.email is NOT NULL UNIQUE in the original schema; accounts are

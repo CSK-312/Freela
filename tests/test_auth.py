@@ -91,6 +91,44 @@ class AuthAndValidationTests(unittest.TestCase):
         self.assertEqual(self.client.get('/').status_code, 200)
         self.assertTrue(self.query('SELECT password_hash FROM users WHERE id=1')[0][0].startswith('pbkdf2:'))
 
+    def test_public_seed_passwords_are_rotated_for_presenters(self):
+        import app
+        local_dir = os.path.join(self.temp.name, '.local')
+        os.makedirs(local_dir, exist_ok=True)
+        credential_path = os.path.join(local_dir, 'demo-credentials.txt')
+        with open(credential_path, 'w', encoding='utf-8') as file:
+            file.write('old credentials\n')
+        app.prepare_demo_credentials()
+        with open(credential_path, encoding='utf-8') as file:
+            credentials = dict(line.strip().split(': ', 1) for line in file)
+        self.assertEqual(len(credentials), 7)
+        self.assertEqual(len(set(credentials.values())), 7)
+        backups = [name for name in os.listdir(local_dir) if name.startswith('demo-credentials.txt.backup-')]
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(self.post('/login', username='alex_dev', password='password123').status_code, 200)
+        self.assertEqual(self.post('/login', username='alex_dev', password=credentials['alex_dev']).status_code, 302)
+        app.prepare_demo_credentials()
+
+    def test_admin_is_private_and_cannot_be_registered(self):
+        import app
+        app.prepare_admin_account()
+        self.assertEqual(self.client.get('/admin').status_code, 302)
+        self.login_as(1)
+        self.assertEqual(self.client.get('/admin').status_code, 302)
+        self.post('/logout')
+        self.assertEqual(self.post('/register', username='presentation_admin',
+                                   password='longpassword', role='admin').status_code, 200)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM users WHERE username='presentation_admin'")[0][0], 0)
+        with open(os.path.join(self.temp.name, '.local', 'admin-credentials.txt'), encoding='utf-8') as file:
+            password = file.read().strip().split(': ', 1)[1]
+        self.assertEqual(self.post('/login', username='presentation_admin', password='wrong').status_code, 200)
+        self.assertEqual(self.post('/login', username='presentation_admin', password=password).status_code, 302)
+        page = self.client.get('/admin')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('Reputation records (150)', page.get_data(as_text=True))
+        self.assertEqual(self.client.get('/jobs/new').status_code, 302)
+        self.assertEqual(self.client.get('/api/check-eligibility/1').status_code, 403)
+
     def test_logout_requires_post(self):
         self.login_as(3)
         self.assertEqual(self.client.get('/logout').status_code, 405)
