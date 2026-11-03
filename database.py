@@ -20,6 +20,11 @@ def hash_password(password):
 
 def _initialize_schema(conn):
     cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS admins (
+        id INTEGER PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL
+    )''')
 
     # Users table
     cursor.execute('''

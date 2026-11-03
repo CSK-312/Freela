@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Admin overview - Freela{% endblock %}
+{% block content %}
+<div style="max-width: 1100px; margin: 32px auto; padding: 0 24px;">
+  <h1>Presentation admin</h1>
+  <p>Platform view of demo accounts, jobs, and private history. Clients cannot access this page.</p>
+  <h2>Accounts ({{ users|length }})</h2>
+  <ul>{% for user in users %}<li>{{ user.username }} — {{ user.role }}</li>{% endfor %}</ul>
+  <h2>Jobs ({{ jobs|length }})</h2>
+  <ul>{% for job in jobs %}<li>#{{ job.id }} {{ job.title }} — {{ job.status }}</li>{% endfor %}</ul>
+  <h2>Reputation records ({{ records|length }})</h2>
+  <div style="overflow-x: auto;"><table style="width: 100%; text-align: left;">
+    <thead><tr><th>Reference</th><th>Freelancer</th><th>Rating</th><th>On time</th><th>Disputed</th></tr></thead>
+    <tbody>{% for record in records %}<tr>
+      <td>{{ record.job_reference }}</td><td>{{ record.freelancer }}</td>
+      <td>{{ '%.2f'|format(record.rating_scaled / 100) }}</td>
+      <td>{{ 'Yes' if record.on_time else 'No' }}</td><td>{{ 'Yes' if record.disputed else 'No' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</div>
+{% endblock %}
