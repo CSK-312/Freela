@@ -223,6 +223,7 @@ def _initialize_schema(conn):
     _migrate_reputation(conn)
     _migrate_marketplace(conn)
     _migrate_credentials(conn)
+    _migrate_signatures(conn)
 
 
 def init_db():
@@ -380,6 +381,22 @@ def _migrate_credentials(conn):
     conn.execute('INSERT INTO schema_migrations(version) VALUES (3)')
 
 
+def _migrate_signatures(conn):
+    """Version 4: server signatures on reviews, reputation records (as a hash chain) and credentials."""
+    if conn.execute('SELECT 1 FROM schema_migrations WHERE version = 4').fetchone():
+        return
+    import integrity
+    for table, column in (('reputation_records', 'chain_index INTEGER'), ('reputation_records', 'chain_hash TEXT'),
+                          ('reputation_records', 'signature TEXT'), ('reviews', 'signature TEXT'),
+                          ('credentials', 'history_hash TEXT'), ('credentials', 'signature TEXT')):
+        conn.execute(f'ALTER TABLE {table} ADD COLUMN {column}')
+    # One position per freelancer chain, so two concurrent appends can never both become "next".
+    conn.execute('CREATE UNIQUE INDEX reputation_chain ON reputation_records(freelancer_id, chain_index)')
+    # Whatever is stored at this moment is what gets signed: tampering before now is not detectable.
+    integrity.sign_existing_rows(conn)
+    conn.execute('INSERT INTO schema_migrations(version) VALUES (4)')
+
+
 def get_current_credential(conn, freelancer_id):
     return conn.execute('''SELECT * FROM credentials WHERE freelancer_id = ? AND revoked_at IS NULL
         ORDER BY version DESC LIMIT 1''', (freelancer_id,)).fetchone()
@@ -413,9 +430,9 @@ def _seed_demo_history(conn):
 
 
 def get_reputation_records(conn, freelancer_id):
-    """Return the complete private history in a deterministic order for the prover."""
+    """Return the complete private history in chain order, unverified. Proving uses integrity.verified_history."""
     return conn.execute('''SELECT * FROM reputation_records WHERE freelancer_id = ?
-        ORDER BY completed_at, id''', (freelancer_id,)).fetchall()
+        ORDER BY chain_index, id''', (freelancer_id,)).fetchall()
 
 if __name__ == '__main__':
     init_db()
