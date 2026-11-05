@@ -14,6 +14,12 @@
     </div>
   </div>
   
+  {% if current_freelancer.integrity_error %}
+  <div class="alert alert-danger" style="margin: 0; flex: 1 1 320px;">
+    <strong>Your job history failed its signature check.</strong> It was changed outside the app, so no figures are shown and no proof can be made until an admin restores it.
+    <div style="font-size: 12px; margin-top: 4px;">{{ current_freelancer.integrity_error }}</div>
+  </div>
+  {% else %}
   <div style="display: flex; gap: 20px; align-items: center;">
     <div style="text-align: center;">
       <span style="font-size: 11px; text-transform: uppercase; color: #94a3b8; font-weight: 700; display: block;">Rating</span>
@@ -32,4 +38,5 @@
       <span style="font-size: 16px; font-weight: 800; color: #ef4444;">{{ current_freelancer.dispute_count }}</span>
     </div>
   </div>
+{% endif %}
 </div>

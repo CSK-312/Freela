@@ -11,6 +11,7 @@
 {% endmacro %}
 
 {% macro stars(rating_scaled) %}<span style="color: #f59e0b;">{{ '★' * (rating_scaled // 100) }}</span> {{ rating_scaled // 100 }}/5{% endmacro %}
+{% macro tampered(review) %}{% if not review.authentic %} · <span style="color: #b91c1c;" title="This review no longer matches its server signature">signature invalid, not counted</span>{% endif %}{% endmacro %}
 
 {% macro rating_fields(with_dispute) %}
   <div style="margin-bottom: 14px;">
@@ -85,11 +86,11 @@
         <div class="panel">
           <div class="panel-title"><i class="fa-solid fa-star" style="color: #f59e0b;"></i> Reviews</div>
           {% if reviews.of_freelancer %}
-          <p style="font-size: 14px; margin-bottom: 4px;"><strong>Your review of {{ job.freelancer_name }}:</strong> {{ stars(reviews.of_freelancer.rating_scaled) }}{% if reviews.of_freelancer.disputed %} · <span style="color: #b91c1c;">disputed</span>{% endif %}</p>
+          <p style="font-size: 14px; margin-bottom: 4px;"><strong>Your review of {{ job.freelancer_name }}:</strong> {{ stars(reviews.of_freelancer.rating_scaled) }}{% if reviews.of_freelancer.disputed %} · <span style="color: #b91c1c;">disputed</span>{% endif %}{{ tampered(reviews.of_freelancer) }}</p>
           {% if reviews.of_freelancer.comment %}<p class="muted" style="margin-bottom: 12px;">"{{ reviews.of_freelancer.comment }}"</p>{% endif %}
           {% endif %}
           {% if reviews.of_client %}
-          <p style="font-size: 14px; margin-bottom: 4px;"><strong>{{ job.freelancer_name }}'s review of you:</strong> {{ stars(reviews.of_client.rating_scaled) }}</p>
+          <p style="font-size: 14px; margin-bottom: 4px;"><strong>{{ job.freelancer_name }}'s review of you:</strong> {{ stars(reviews.of_client.rating_scaled) }}{{ tampered(reviews.of_client) }}</p>
           {% if reviews.of_client.comment %}<p class="muted">"{{ reviews.of_client.comment }}"</p>{% endif %}
           {% else %}
           <p class="muted">{{ job.freelancer_name }} hasn't reviewed you yet.</p>
@@ -118,12 +119,12 @@
         <div class="panel">
           <div class="panel-title"><i class="fa-solid fa-star" style="color: #f59e0b;"></i> Job completed</div>
           {% if reviews.of_freelancer %}
-          <p style="font-size: 14px; margin-bottom: 4px;"><strong>The client rated you</strong> {{ stars(reviews.of_freelancer.rating_scaled) }}{% if reviews.of_freelancer.disputed %} · <span style="color: #b91c1c;">marked as disputed</span>{% endif %}</p>
+          <p style="font-size: 14px; margin-bottom: 4px;"><strong>The client rated you</strong> {{ stars(reviews.of_freelancer.rating_scaled) }}{% if reviews.of_freelancer.disputed %} · <span style="color: #b91c1c;">marked as disputed</span>{% endif %}{{ tampered(reviews.of_freelancer) }}</p>
           {% if reviews.of_freelancer.comment %}<p class="muted" style="margin-bottom: 8px;">"{{ reviews.of_freelancer.comment }}"</p>{% endif %}
           <p class="muted" style="margin-bottom: 16px;">This job is now part of your private history and counts in your next ZK proof.</p>
           {% endif %}
           {% if reviews.of_client %}
-          <p style="font-size: 14px;"><strong>Your review of {{ job.client_name }}:</strong> {{ stars(reviews.of_client.rating_scaled) }}</p>
+          <p style="font-size: 14px;"><strong>Your review of {{ job.client_name }}:</strong> {{ stars(reviews.of_client.rating_scaled) }}{{ tampered(reviews.of_client) }}</p>
           {% else %}
           <form method="POST" action="{{ url_for('review_client', job_id=job.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

@@ -10,7 +10,8 @@ from unittest.mock import patch
 import database
 from generate_circuit import generate_main_nr, generate_commit_nr
 from generate_prover import generate_prover_toml
-from support import insert_test_credential
+import integrity
+from support import accept_edits, insert_test_credential
 import zk_engine
 
 PROJECT = Path(__file__).resolve().parent.parent
@@ -45,6 +46,8 @@ class FullHistoryTests(unittest.TestCase):
         conn = database.get_db_connection()
         conn.execute('UPDATE reputation_records SET rating_scaled=100, on_time=0, disputed=1 WHERE id=1')
         conn.commit()
+        accept_edits(3)
+        insert_test_credential(3)
         records = database.get_reputation_records(conn, 3)
         conn.close()
         witness = self.inputs()['private_inputs']
@@ -99,9 +102,7 @@ class FullHistoryTests(unittest.TestCase):
 
     def test_missing_or_stale_credential_is_rejected(self):
         conn = database.get_db_connection()
-        conn.execute('''INSERT INTO reputation_records
-            (job_reference, freelancer_id, client_id, rating_scaled, on_time, disputed, completed_at)
-            VALUES ('EXTRA-1', 3, 1, 500, 1, 0, '2026-06-01')''')
+        integrity.append_reputation_record(conn, 'EXTRA-1', 3, 1, 500, 1, 0, '2026-06-01')
         conn.commit()
         conn.close()
         with self.assertRaisesRegex(ValueError, 'must be reissued'):
@@ -204,13 +205,17 @@ class RealToolchainTests(unittest.TestCase):
         self.assertEqual(len(result['vk_hash']), 64)
         self.assertEqual(list((self.root / 'runs').iterdir()), [])
 
-        # Editing history after issuance (even improving it) breaks the commitment.
+        # Editing history outside the app (even improving it) fails its signature before any proving.
         self.sql('UPDATE reputation_records SET on_time=1 WHERE id=1')
-        self.assertFalse(zk_engine.generate_and_verify_zk_proof(3, 1)['success'])
+        with self.assertRaises(integrity.TamperError):
+            zk_engine.generate_and_verify_zk_proof(3, 1)
+        with self.assertRaises(integrity.TamperError):
+            zk_engine.issue_credential(3)
 
-        # Once reissued over a poor oldest job, the circuit counts it: 4.9 is no longer met.
+        # Once an admin accepts a poor oldest job and it is reissued, the circuit counts it: 4.9 is no longer met.
         self.sql('UPDATE reputation_records SET rating_scaled=100 WHERE id=1')
         self.sql('UPDATE jobs SET min_rating=4.9 WHERE id=1')
+        accept_edits(3)
         zk_engine.issue_credential(3)
         self.assertFalse(zk_engine.generate_and_verify_zk_proof(3, 1)['success'])
 

@@ -3,8 +3,9 @@ from decimal import Decimal
 from pathlib import Path
 import sys
 
-from database import get_db_connection, get_reputation_records, get_current_credential
+from database import get_db_connection, get_current_credential
 from generate_circuit import DEFAULT_HISTORY_CAPACITY, validate_capacity
+import integrity
 
 # BN254 scalar field order; Noir Field values must be below it.
 FIELD_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -49,12 +50,16 @@ def _read_snapshot(freelancer_id, job_id=None):
         conn.execute('BEGIN')
         freelancer = conn.execute('SELECT * FROM users WHERE id=?', (freelancer_id,)).fetchone()
         job = conn.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone() if job_id is not None else None
-        records = get_reputation_records(conn, freelancer_id)
+        if not freelancer or freelancer['role'] != 'freelancer':
+            raise ValueError('Reputation owner must be an existing freelancer.')
+        # Every record's signature and chain link, and the current credential's signature
+        # over the history it covered, are checked before anything reaches a circuit.
+        records = integrity.verified_history(conn, freelancer_id)
         credential = get_current_credential(conn, freelancer_id)
+        if credential is not None:
+            integrity.check_credential(credential, records)
     finally:
         conn.close()
-    if not freelancer or freelancer['role'] != 'freelancer':
-        raise ValueError('Reputation owner must be an existing freelancer.')
     return freelancer, job, records, credential
 
 
@@ -65,7 +70,7 @@ def generate_commit_toml(freelancer_id, salt, output_path, num_past_jobs=DEFAULT
     arrays = history_arrays(records, num_past_jobs)
     _write_toml(output_path, 'Credential issuance: full stored job history.', arrays,
                 {'applicant_id': freelancer_id, 'salt': salt})
-    return {'record_count': len(records)}
+    return {'record_count': len(records), 'history': records}
 
 
 def generate_prover_toml(freelancer_id, job_id, output_path=None,

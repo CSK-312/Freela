@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 from werkzeug.security import check_password_hash
 import database
+import integrity
 from database import get_db_connection, init_db, hash_password, get_current_credential
 from generate_circuit import DEFAULT_HISTORY_CAPACITY
 
@@ -231,13 +232,11 @@ def job_stage(job):
 
 app.jinja_env.globals.update(job_stage=job_stage, STAGE_LABELS=STAGE_LABELS)
 
-# Average of the reviews freelancers left for each client (public, not part of any proof).
-CLIENT_RATINGS_JOIN = '''
-    LEFT JOIN (
-        SELECT reviewee_id, AVG(rating_scaled) / 100.0 AS client_rating, COUNT(*) AS client_review_count
-        FROM reviews GROUP BY reviewee_id
-    ) cr ON cr.reviewee_id = j.client_id
-'''
+
+def with_client_ratings(conn, jobs):
+    """Jobs as dicts with the client's public rating, averaged over signature-checked reviews only."""
+    ratings = integrity.client_ratings(conn, [job['client_id'] for job in jobs])
+    return [{**dict(job), **ratings[job['client_id']]} for job in jobs]
 
 
 class FormError(ValueError):
@@ -284,11 +283,9 @@ def home():
     search_query = request.args.get('q', '').strip()
 
     query = '''
-        SELECT j.*, u.full_name as client_name, u.avatar_initials as client_initials,
-               cr.client_rating, cr.client_review_count
+        SELECT j.*, u.full_name as client_name, u.avatar_initials as client_initials
         FROM jobs j
         JOIN users u ON j.client_id = u.id
-    ''' + CLIENT_RATINGS_JOIN + '''
         WHERE j.status = 'open'
     '''
     params = []
@@ -303,7 +300,7 @@ def home():
         params.append(f'%{search_query}%')
 
     query += ' ORDER BY j.id DESC'
-    jobs = conn.execute(query, params).fetchall()
+    jobs = with_client_ratings(conn, conn.execute(query, params).fetchall())
 
     # Get categories
     categories = conn.execute('SELECT * FROM categories').fetchall()
@@ -311,9 +308,7 @@ def home():
     # The logged-in freelancer's own private stats (never anyone else's)
     current_freelancer = None
     if g.user['role'] == 'freelancer':
-        current_freelancer = conn.execute(
-            'SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)
-        ).fetchone()
+        current_freelancer = integrity.verified_reputation(conn, g.user['id'])
 
     conn.close()
 
@@ -332,17 +327,17 @@ def job_detail(job_id):
     conn = get_db_connection()
     job = conn.execute('''
         SELECT j.*, u.full_name AS client_name, u.avatar_initials AS client_initials,
-               cr.client_rating, cr.client_review_count, f.full_name AS freelancer_name,
+               f.full_name AS freelancer_name,
                datetime(j.accepted_at, '+' || j.delivery_days || ' days') AS due_at
         FROM jobs j
         JOIN users u ON j.client_id = u.id
         LEFT JOIN users f ON j.hired_freelancer_id = f.id
-    ''' + CLIENT_RATINGS_JOIN + '''
         WHERE j.id = ?
     ''', (job_id,)).fetchone()
     if job is None:
         conn.close()
         abort(404)
+    job = with_client_ratings(conn, [job])[0]
 
     is_owner = job['client_id'] == g.user['id']
     is_hired = job['hired_freelancer_id'] == g.user['id']
@@ -361,13 +356,12 @@ def job_detail(job_id):
         my_application = conn.execute(
             'SELECT * FROM applications WHERE job_id = ? AND freelancer_id = ?', (job_id, g.user['id'])
         ).fetchone()
-        current_freelancer = conn.execute(
-            'SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)
-        ).fetchone()
+        current_freelancer = integrity.verified_reputation(conn, g.user['id'])
     reviews = {}
     if is_owner or is_hired:
         for review in conn.execute('SELECT * FROM reviews WHERE job_id = ?', (job_id,)):
-            reviews['of_freelancer' if review['reviewer_id'] == job['client_id'] else 'of_client'] = review
+            reviews['of_freelancer' if review['reviewer_id'] == job['client_id'] else 'of_client'] = {
+                **dict(review), 'authentic': integrity.review_is_authentic(review)}
     conn.close()
 
     return render_template(
@@ -397,16 +391,12 @@ def dashboard():
             WHERE j.client_id = ?
             ORDER BY j.id DESC
         ''', (g.user['id'],)).fetchall()
-        my_rating = conn.execute(
-            'SELECT AVG(rating_scaled) / 100.0 AS rating, COUNT(*) AS count FROM reviews WHERE reviewee_id = ?',
-            (g.user['id'],)
-        ).fetchone()
+        rating = integrity.client_ratings(conn, [g.user['id']])[g.user['id']]
+        my_rating = {'rating': rating['client_rating'], 'count': rating['client_review_count']}
         conn.close()
         return render_template('dashboard_client.html', jobs=jobs, my_rating=my_rating)
 
-    current_freelancer = conn.execute(
-        'SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)
-    ).fetchone()
+    current_freelancer = integrity.verified_reputation(conn, g.user['id'])
     applications = conn.execute('''
         SELECT a.*, j.title, j.budget, j.category
         FROM applications a JOIN jobs j ON a.job_id = j.id
@@ -448,9 +438,11 @@ def admin_dashboard():
         records = conn.execute('''SELECT r.job_reference, u.username AS freelancer,
             r.rating_scaled, r.on_time, r.disputed FROM reputation_records r
             JOIN users u ON u.id = r.freelancer_id ORDER BY r.id DESC''').fetchall()
+        problems = integrity.audit(conn)
     finally:
         conn.close()
-    return render_template('admin.html', users=users, jobs=jobs, records=records)
+    return render_template('admin.html', users=users, jobs=jobs, records=records, problems=problems,
+                           key_fingerprint=integrity.public_key_fingerprint())
 
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -586,11 +578,14 @@ def check_eligibility(job_id):
     """
     conn = get_db_connection()
     job = conn.execute("SELECT * FROM jobs WHERE id = ? AND status = 'open'", (job_id,)).fetchone()
-    freelancer = conn.execute('SELECT * FROM users_with_reputation WHERE id = ?', (g.user['id'],)).fetchone()
+    freelancer = integrity.verified_reputation(conn, g.user['id'])
     conn.close()
 
-    if not job or not freelancer:
+    if not job:
         return jsonify({'error': 'This job is not open for applications'}), 404
+    if freelancer['integrity_error']:
+        return jsonify({'error': 'Your job history failed its signature check, so no proof can be made: '
+                                 + freelancer['integrity_error']}), 409
 
     # Private inputs vs Public criteria check
     satisfies_rating = freelancer['rating_sum'] >= round(job['min_rating'] * 100) * freelancer['completed_jobs']
@@ -801,16 +796,14 @@ def complete_job(job_id):
             flash('Only delivered work can be approved.', 'warning')
             return redirect(url_for('job_detail', job_id=job_id))
         conn.execute("UPDATE jobs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?", (job_id,))
-        conn.execute('''INSERT INTO reviews (job_id, reviewer_id, reviewee_id, rating_scaled, comment, disputed)
-            VALUES (?, ?, ?, ?, ?, ?)''', (job_id, g.user['id'], job['hired_freelancer_id'], rating_scaled, comment, disputed))
+        integrity.add_review(conn, job_id, g.user['id'], job['hired_freelancer_id'], rating_scaled, comment, disputed)
         # Feedback loop: the completed, rated job joins the freelancer's private history,
         # so their next proof is computed over it. On time = delivered within delivery_days
         # of being hired, measured by the server rather than reported by either side.
-        conn.execute('''INSERT INTO reputation_records
-            (job_reference, freelancer_id, client_id, rating_scaled, on_time, disputed, completed_at)
-            SELECT 'JOB-' || id, hired_freelancer_id, client_id, ?,
-                   julianday(delivered_at) <= julianday(accepted_at) + delivery_days, ?, date('now')
-            FROM jobs WHERE id = ?''', (rating_scaled, disputed, job_id))
+        on_time, today = conn.execute('''SELECT julianday(delivered_at) <= julianday(accepted_at) + delivery_days,
+            date('now') FROM jobs WHERE id = ?''', (job_id,)).fetchone()
+        integrity.append_reputation_record(conn, f'JOB-{job_id}', job['hired_freelancer_id'], g.user['id'],
+                                           rating_scaled, on_time, disputed, today)
     # Reissue the freelancer's credential so their next proof commits to the new history.
     import zk_engine
     try:
@@ -839,8 +832,7 @@ def review_client(job_id):
         if conn.execute('SELECT 1 FROM reviews WHERE job_id = ? AND reviewer_id = ?', (job_id, g.user['id'])).fetchone():
             flash('You already reviewed this client.', 'info')
             return redirect(url_for('job_detail', job_id=job_id))
-        conn.execute('''INSERT INTO reviews (job_id, reviewer_id, reviewee_id, rating_scaled, comment)
-            VALUES (?, ?, ?, ?, ?)''', (job_id, g.user['id'], job['client_id'], rating_scaled, comment))
+        integrity.add_review(conn, job_id, g.user['id'], job['client_id'], rating_scaled, comment)
     flash('Thanks! Your review of the client was saved.', 'success')
     return redirect(url_for('job_detail', job_id=job_id))
 

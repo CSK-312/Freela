@@ -4,6 +4,17 @@
 <div style="max-width: 1100px; margin: 32px auto; padding: 0 24px;">
   <h1>Presentation admin</h1>
   <p>Platform view of demo accounts, jobs, and private history. Clients cannot access this page.</p>
+  <h2>Integrity check</h2>
+  <p>Reviews, job history and credentials are signed with the server key <code>{{ key_fingerprint }}</code>, which is kept outside the database.</p>
+  {% if problems %}
+  <div class="alert alert-danger">{{ problems|length }} problem{{ 's' if problems|length != 1 }} found: these rows were changed outside the app.</div>
+  <div style="overflow-x: auto;"><table style="width: 100%; text-align: left;">
+    <thead><tr><th>Area</th><th>Subject</th><th>Problem</th></tr></thead>
+    <tbody>{% for item in problems %}<tr><td>{{ item.area }}</td><td>{{ item.subject }}</td><td>{{ item.problem }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="alert alert-success">All signatures are valid: no review, history record or credential has been altered.</div>
+  {% endif %}
   <h2>Accounts ({{ users|length }})</h2>
   <ul>{% for user in users %}<li>{{ user.username }} — {{ user.role }}</li>{% endfor %}</ul>
   <h2>Jobs ({{ jobs|length }})</h2>

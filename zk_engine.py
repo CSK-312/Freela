@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from generate_circuit import generate_main_nr, generate_commit_nr, DEFAULT_HISTORY_CAPACITY
 from generate_prover import generate_prover_toml, generate_commit_toml, field_hex, FIELD_MODULUS
 from database import get_db_connection
+import integrity
 
 NARGO_VERSION = "1.0.0-beta.26"
 BB_VERSION = "5.2.0"
@@ -165,14 +166,12 @@ def issue_credential(freelancer_id, num_past_jobs=DEFAULT_HISTORY_CAPACITY):
     conn = get_db_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        version = conn.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM credentials WHERE freelancer_id = ?",
-                               (freelancer_id,)).fetchone()[0]
-        conn.execute("""INSERT INTO credentials (freelancer_id, version, commitment, salt, record_count)
-            VALUES (?, ?, ?, ?, ?)""", (freelancer_id, version, commitment, salt, info["record_count"]))
+        # Signed over the chain head it committed to, so later truncation of the history is detectable.
+        credential = integrity.store_credential(conn, freelancer_id, commitment, salt, info["history"])
         conn.commit()
     finally:
         conn.close()
-    return {"version": version, "commitment": commitment, "record_count": info["record_count"]}
+    return {"version": credential["version"], "commitment": commitment, "record_count": info["record_count"]}
 
 
 def generate_and_verify_zk_proof(freelancer_id: int, job_id: int, num_past_jobs: int = DEFAULT_HISTORY_CAPACITY):

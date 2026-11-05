@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import database
 from generate_prover import generate_prover_toml
-from support import insert_test_credential
+import integrity
+from support import accept_edits, insert_test_credential
 
 
 class DatabaseTests(unittest.TestCase):
@@ -70,6 +71,7 @@ class DatabaseTests(unittest.TestCase):
     def test_prover_uses_stored_ratings(self):
         self.conn.execute('UPDATE reputation_records SET rating_scaled=425 WHERE freelancer_id=3')
         self.conn.commit()
+        accept_edits(3)
         insert_test_credential(3)
         result = generate_prover_toml(3, 1, os.path.join(self.temp.name, 'Prover.toml'))
         inputs = result['private_inputs']
@@ -90,12 +92,18 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(data['freelancer_private_stats']['completed_jobs'], 40)
             self.conn.execute('UPDATE reputation_records SET on_time=0 WHERE freelancer_id=3')
             self.conn.commit()
+            # Edited outside the app: refused until an admin accepts the change.
+            response = client.get('/api/check-eligibility/1')
+            self.assertEqual(response.status_code, 409)
+            self.assertIn('signature check', response.get_json()['error'])
+            accept_edits(3)
             self.assertFalse(client.get('/api/check-eligibility/1').get_json()['eligible'])
 
     def test_existing_database_preserved(self):
         source_path = os.path.join(os.path.dirname(database.__file__), 'freela.db')
         migrated_path = os.path.join(self.temp.name, 'existing.db')
         source = sqlite3.connect(source_path)
+        record_count = source.execute('SELECT COUNT(*) FROM reputation_records').fetchone()[0]
         target = sqlite3.connect(migrated_path)
         source.backup(target)
         # Migrations add columns, so compare the columns that existed before.
@@ -105,6 +113,14 @@ class DatabaseTests(unittest.TestCase):
                   for t in columns}
         source.close()
         target.close()
+        source_key = os.path.join(os.path.dirname(database.__file__), '.local', 'signing_key.pem')
+        if os.path.exists(source_key):
+            import shutil
+            temp_key = os.path.join(self.temp.name, '.local', 'signing_key.pem')
+            os.makedirs(os.path.dirname(temp_key), exist_ok=True)
+            shutil.copy2(source_key, temp_key)
+            with integrity._key_lock:
+                integrity._keys.pop(temp_key, None)
         with patch.object(database, 'DB_PATH', migrated_path):
             database.init_db()
             database.init_db()
@@ -112,7 +128,9 @@ class DatabaseTests(unittest.TestCase):
             for table, rows in before.items():
                 self.assertEqual([tuple(r) for r in conn.execute(
                     f'SELECT {", ".join(columns[table])} FROM {table} ORDER BY id')], rows)
-            self.assertEqual(conn.execute('SELECT COUNT(*) FROM reputation_records').fetchone()[0], 150)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM reputation_records').fetchone()[0], record_count)
+            # Everything already stored was signed by the migration and checks out.
+            self.assertEqual(integrity.audit(conn), [])
             conn.close()
 
 

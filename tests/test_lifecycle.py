@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import database
 from generate_prover import generate_prover_toml
+import integrity
 from support import insert_test_credential
 import zk_engine
 
@@ -130,6 +131,15 @@ class HiringLifecycleTests(unittest.TestCase):
         # Completing twice must not add a second record.
         self.post('/jobs/1/complete', rating='5')
         self.assertEqual(self.one("SELECT COUNT(*) FROM reputation_records WHERE job_reference = 'JOB-1'")[0], 1)
+        # The new review, record and credential are all signed and pass the integrity audit.
+        self.as_user(ALEX)
+        self.post('/jobs/1/review-client', rating='4')
+        conn = database.get_db_connection()
+        try:
+            self.assertEqual(integrity.audit(conn), [])
+            self.assertEqual(len(integrity.verified_history(conn, ALEX)), after['completed_jobs'])
+        finally:
+            conn.close()
 
     def test_job_still_completes_if_credential_cannot_be_reissued(self):
         self.hire_and_deliver()

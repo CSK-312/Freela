@@ -20,6 +20,18 @@ College project for CS670, Applied Cryptography & Zero-Knowledge Systems. Paymen
 **What this guarantees:** clients never learn a freelancer's numbers; history edited or dropped after issuance can't produce a valid proof; a proof can't be reused for another job or person.
 **Trust model:** the platform is the credential issuer, so it holds the history and salt and runs the prover. The zero knowledge is toward clients, not the platform.
 
+## Signed data (database tamper detection)
+
+Every review, reputation record and credential is signed by the server with an Ed25519 key kept in `.local/signing_key.pem`, outside the database (`integrity.py`). Someone who can edit `freela.db` but not read that key can't change ratings without it showing:
+
+- **Reviews** are signed when written. Client ratings are averaged only over reviews whose signature checks out; a broken one is marked "signature invalid, not counted".
+- **Reputation records** form a hash chain per freelancer, each link signed, so editing, inserting, reordering or deleting a record breaks it. Issuing a credential, proving, the eligibility preview and the reputation card all check the chain first and refuse a broken one.
+- **Credentials** sign the chain head they committed to, so cutting records off the end of a history is caught too.
+
+The admin page runs a full integrity check, as does `.venv/bin/python integrity.py`. After a deliberate correction, `.venv/bin/python integrity.py resign <freelancer_id>` signs the history as it is now and revokes that freelancer's credentials; a new one is issued on their next application.
+
+Limits: whoever holds the key can sign anything, so this protects against database-only access, not a compromised server. Restoring an older, fully consistent copy of the database is not detected. Data already in the database when signing was introduced was signed as-is. Keep `.local/signing_key.pem` with the database: without it no stored signature can be checked.
+
 ## Setup
 
 Requires Python 3.9+ and, for proofs, the pinned Noir toolchain (Nargo `1.0.0-beta.26`, Barretenberg `5.2.0`). macOS and Linux run it natively; on Windows the app uses the toolchain inside WSL. See [TOOLCHAIN.md](TOOLCHAIN.md) for install commands.
@@ -40,7 +52,7 @@ On first start, the app replaces the old public seed password with a unique rand
 
 The presentation admin is `presentation_admin`. Its random password is in `.local/admin-credentials.txt`. The admin can view demo accounts, jobs, and full reputation records at `/admin`; public sign-up cannot create an admin. The admin credentials file must stay with the local database too.
 
-To reset the presentation data, stop the app, then remove `freela.db`, `.local/demo-credentials.txt`, and `.local/admin-credentials.txt` together. Start the app again to recreate the sample database and issue new passwords. Any older `.backup-*` credentials files are historical copies and are not used on restart.
+To reset the presentation data, stop the app, then remove `freela.db`, `.local/demo-credentials.txt`, and `.local/admin-credentials.txt` together (the signing key can stay). Start the app again to recreate the sample database and issue new passwords. Any older `.backup-*` credentials files are historical copies and are not used on restart.
 
 | Account | Role | Notes |
 |---|---|---|
@@ -63,7 +75,7 @@ To issue credentials for every seeded freelancer up front: `.venv/bin/python zk_
 .venv/bin/python -B -m unittest discover -s tests -v
 ```
 
-Covers login, roles, CSRF, form validation, the full hiring and review loop, privacy of applicants and stats, credential issuance, public-input binding and the engine's failure paths. When `nargo` and `bb` are installed it also runs the 20 Noir circuit tests and a real end-to-end proof, including tamper detection.
+Covers login, roles, CSRF, form validation, the full hiring and review loop, privacy of applicants and stats, credential issuance, signature and hash-chain tamper detection, public-input binding and the engine's failure paths. When `nargo` and `bb` are installed it also runs the 20 Noir circuit tests and a real end-to-end proof, including tamper detection.
 
 ## Project layout
 
@@ -74,6 +86,7 @@ Covers login, roles, CSRF, form validation, the full hiring and review loop, pri
 | `generate_circuit.py` | Generates both Noir circuits (and their tests) from one template |
 | `generate_prover.py` | Builds circuit inputs from the database |
 | `zk_engine.py` | Compiles circuits, issues credentials, proves and verifies |
+| `integrity.py` | Signs and checks reviews, history chains and credentials; audit CLI |
 | `templates/`, `static/` | Pages and styles |
 | `tests/` | Unit and integration tests |
 
